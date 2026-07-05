@@ -82,6 +82,11 @@ export default async function handler(request, response) {
 
     const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
     const clientIP = request.headers['x-vercel-forwarded-for'] || '127.0.0.1';
+    
+    // 自適應判斷客戶端格式要求
+    const hostUrl = `https://${request.headers.host}${request.url.split('?')[0]}`;
+    const isStashOrClash = userAgent.includes('Stash') || userAgent.includes('Clash') || query.type === 'clash' || query.type === 'stash';
+    const isSingBox = userAgent.includes('sing-box') || query.type === 'singbox';
 
     if (method === 'POST') {
         let body = '';
@@ -127,6 +132,7 @@ export default async function handler(request, response) {
 
         if (recentKeys.length > 10) recentKeys = recentKeys.slice(0, 10);
 
+        // 優選 IP 撈取
         let preferredIPList = [];
         try {
             const ipData = await cfGet('https://api.v2rayse.com/cf-ip');
@@ -147,6 +153,7 @@ export default async function handler(request, response) {
         }
         finalIPList = finalIPList.slice(0, selectIPCount);
 
+        // 打去 CF 註冊帳戶
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": crypto.randomBytes(32).toString('base64'), "install_id": "", "fcm_token": ""
         });
@@ -156,20 +163,22 @@ export default async function handler(request, response) {
         const clientIPv6 = regData.config.interface.addresses.v6.replace('/128', '');
         const clientID = regData.config.client_id || ""; 
 
-        let reserved = "[0,0,0]";
+        let reserved = [0, 0, 0];
         if (clientID) {
             try {
                 const parsedId = Buffer.from(clientID, 'base64').toString('binary');
                 if (parsedId.length >= 3) {
-                    reserved = "[" + [parsedId.charCodeAt(0), parsedId.charCodeAt(1), parsedId.charCodeAt(2)].join(",") + "]";
+                    reserved = [parsedId.charCodeAt(0), parsedId.charCodeAt(1), parsedId.charCodeAt(2)];
                 }
             } catch(e){}
         }
 
-        let proxyNodesYaml = '';
-        finalIPList.forEach((item, index) => {
-            const ipRegion = item.country || 'CF';
-            proxyNodesYaml += `  - name: "🚀 CF-WARP-優選-[${ipRegion}]-${index+1}"
+        // --- 輸出 A：Stash / Clash YAML 格式 ---
+        if (isStashOrClash) {
+            let proxyNodesYaml = '';
+            finalIPList.forEach((item, index) => {
+                const ipRegion = item.country || 'CF';
+                proxyNodesYaml += `  - name: "🚀 CF-WARP-[${ipRegion}]-${index+1}"
     type: wireguard
     server: ${item.ip}
     port: 2408
@@ -177,27 +186,43 @@ export default async function handler(request, response) {
     ipv6: ${clientIPv6}
     public-key: ${peerPubKey}
     private-key: ${realPrivateKey}
-    reserved: ${reserved}
+    reserved: [${reserved.join(',')}]
     udp: true
     remote-dns-resolve: true
     mtu: 1280\n`;
-        });
+            });
 
-        const stashYaml = `# =========================================================
-# ⚙️ [3X-UI WARP FUNCTION - LIVE ROTATION & SPEEDTEST]
-# Your Network IP: ${clientIP} [Location: ${clientCountry}]
-# Total Optimized Endpoints Selected: ${finalIPList.length} Nodes
-# Active Private Key: ${realPrivateKey}
-# =========================================================
-
-proxies:
-${proxyNodesYaml}`;
-
-        if (userAgent.includes('Stash') || userAgent.includes('Clash') || query.format === 'yaml') {
+            const stashYaml = `# YAML Config for Stash/Clash\nproxies:\n${proxyNodesYaml}`;
             response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
             return response.status(200).send(stashYaml);
         }
 
+        // --- 輸出 B：Sing-Box JSON 格式 ---
+        if (isSingBox) {
+            const outbounds = finalIPList.map((item, index) => {
+                const ipRegion = item.country || 'CF';
+                return {
+                    type: "wireguard",
+                    tag: `🚀 CF-WARP-[${ipRegion}]-${index+1}`,
+                    server: item.ip,
+                    server_port: 2408,
+                    local_address: [ clientIPv4 + "/32", clientIPv6 + "/128" ],
+                    private_key: realPrivateKey,
+                    peer_public_key: peerPubKey,
+                    reserved: reserved,
+                    mtu: 1280,
+                    udp_fragment: true
+                };
+            });
+
+            const singBoxJson = {
+                outbounds: outbounds
+            };
+            response.setHeader('Content-Type', 'application/json; charset=utf-8');
+            return response.status(200).send(JSON.stringify(singBoxJson, null, 2));
+        }
+
+        // --- 輸出 C：瀏覽器通用控制台網頁 ---
         const nextRotateCountDown = Math.max(0, Math.round((duration - (now - lastRotateTime)) / 1000));
 
         const html = `
@@ -205,7 +230,7 @@ ${proxyNodesYaml}`;
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Auto-WIS 智能定時與優選控制台</title>
+            <title>Auto-WIS 萬能訂閱調度中心</title>
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; padding: 30px; margin: 0; }
                 .container { max-width: 800px; margin: 0 auto; }
@@ -216,10 +241,8 @@ ${proxyNodesYaml}`;
                 input[type="text"], input[type="number"], select { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
                 input[type="text"] { width: 100%; font-family: monospace; background: #fafafa; }
                 .ip-input-group { display: flex; align-items: center; gap: 10px; }
-                button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.2s; }
-                button:hover { background: #0063cc; }
+                button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
                 button.force { background: #34c759; }
-                button.force:hover { background: #28a745; }
                 button.unlock { background: #ff3b30; }
                 .status-tag { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; color: white; }
                 .bg-orange { background: #ff9500; }
@@ -233,21 +256,34 @@ ${proxyNodesYaml}`;
                 th { background: #f8f9fa; color: #666; font-weight: 600; }
                 td.mono { font-family: monospace; font-weight: bold; }
                 
+                .url-box { background: #f8f9fa; border: 1px dashed #007aff; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #333; word-break: break-all; margin-top: 8px; cursor: pointer; }
+                .url-box:hover { background: #f0f7ff; }
+                
                 ol.key-list { padding-left: 0; list-style: none; margin: 0; }
                 ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; }
                 ol.key-list li.active { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; font-weight: bold; }
-                
-                /* 摺疊抽屜精美設定 */
-                summary { font-weight: bold; color: #007aff; cursor: pointer; padding: 10px 0; font-size: 16px; outline: none; user-select: none; }
-                summary:hover { color: #0063cc; }
-                pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; margin-top: 10px; }
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="card">
                     <h2>🌐 你的當前連線定位 <span><span class="ip-badge">${clientIP}</span></span></h2>
-                    <p>Vercel 動態分析你目前身處：<strong style="color:#ff3b30; font-size:18px;">${clientCountry}</strong> 區。系統會自動調度與 ${clientCountry} 寬頻商路由最吻合的優選 Anycast 節點。</p>
+                    <p>Vercel 動態分析你目前身處：<strong style="color:#ff3b30; font-size:18px;">${clientCountry}</strong> 區。系統會自動調度最吻合的優選 Anycast 節點。</p>
+                </div>
+
+                <div class="card" style="border: 2px solid #007aff;">
+                    <h2 style="color:#007aff;">🔗 手機軟體專屬動態訂閱 URL (點擊複製)</h2>
+                    <p style="font-size:13px; color:#555;">直接將以下對應網址複製到你手機 App 的訂閱/配置欄位內。每次手機更新，均會觸發後台動態優選最新 IP！</p>
+                    
+                    <div class="row">
+                        <label>🍏 Stash / 🎛️ Clash 專用動態訂閱網址：</label>
+                        <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">${hostUrl}?type=stash</div>
+                    </div>
+                    
+                    <div class="row">
+                        <label>🦊 Sing-Box 專用動態純 JSON 節點網址：</label>
+                        <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=singbox');alert('已複製 Sing-Box 訂閱網址！');">${hostUrl}?type=singbox</div>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -268,7 +304,7 @@ ${proxyNodesYaml}`;
                             <div class="ip-input-group">
                                 <span>針對 ${clientCountry} 導出前</span>
                                 <input type="number" name="ip_count" value="${selectIPCount}" style="width: 70px; text-align:center;" min="1" max="10">
-                                <span>個最優 IP 節點（已開啟智能補足，改為 10 就一定顯示 10 個）</span>
+                                <span>個最優 IP 節點</span>
                             </div>
                         </div>
 
@@ -305,7 +341,7 @@ ${proxyNodesYaml}`;
                         <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 僅刷新網頁測速</button>
                         ${lockedPrivateKey ? `
                         <form method="POST" style="display:inline; margin-left:10px;">
-                            <input type="hidden" name="unlock">
+                            <input type="hidden" name="action" value="unlock">
                             <button type="submit" class="unlock">🔓 解鎖 Safe Key</button>
                         </form>` : ''}
                     </div>
@@ -352,13 +388,6 @@ ${proxyNodesYaml}`;
                             </li>
                         `).join('')}
                     </ol>
-                </div>
-
-                <div class="card">
-                    <details>
-                        <summary>🔽 點擊展開 / 收起最終 Stash YAML 輸出原始碼</summary>
-                        <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-                    </details>
                 </div>
             </div>
         </body>
