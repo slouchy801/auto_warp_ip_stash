@@ -6,17 +6,24 @@ let recentKeys = [];
 let lockedPrivateKey = ""; 
 let lastRotateTime = Date.now();
 
-// 定時與優選設定（根據要求：預設改為 1 天）
+// 定時與優選設定（預設為 1 天）
 let useForceRotate = false;
-let rotateUnit = "d"; // 預設改為 天 (d)
-let rotateValue = 1;  // 預設改為 1
+let rotateUnit = "d"; 
+let rotateValue = 1;  
 let selectIPCount = 1; 
 
-// 官方經典 Anycast IP 備用池（確保填 10 個時一定有 10 個不同 IP 填滿）
+// 官方經典 Anycast IP 備用池
 const backupIPs = [
-    '162.159.192.1', '162.159.193.1', '162.159.195.1', '162.159.204.1',
-    '188.114.96.1', '188.114.97.1', '188.114.98.1', '188.114.99.1',
-    '141.101.92.1', '141.101.93.1'
+    { ip: '162.159.192.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '162.159.193.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '162.159.195.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '162.159.204.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '188.114.96.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '188.114.97.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '188.114.98.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '188.114.99.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '141.101.92.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' },
+    { ip: '141.101.93.1',  country: 'GLOBAL', isp: 'Cloudflare Anycast' }
 ];
 
 function cfPost(url, data) {
@@ -126,18 +133,18 @@ export default async function handler(request, response) {
         try {
             const ipData = await cfGet('https://api.v2rayse.com/cf-ip');
             if (ipData && ipData.info) {
+                // 優先撈遊客當地（例如 HK），無符合就撈全池
                 const matched = ipData.info.filter(item => item.country === clientCountry);
-                preferredIPList = matched.sort((a,b) => (a.ping || 999) - (b.ping || 999));
+                preferredIPList = (matched.length > 0 ? matched : ipData.info).sort((a,b) => (a.ping || 999) - (b.ping || 999));
             }
         } catch (e) {}
 
-        // 💡 如果大數據庫不夠 10 條 IP，自動從備用池撈出不重複的 IP 補齊，確保一定顯示足夠數量！
         let finalIPList = [...preferredIPList];
         let backupIndex = 0;
         while (finalIPList.length < selectIPCount && backupIndex < backupIPs.length) {
-            const backupIP = backupIPs[backupIndex];
-            if (!finalIPList.some(item => item.ip === backupIP)) {
-                finalIPList.push({ ip: backupIP, ping: 18 + backupIndex * 2, isp: 'Cloudflare Anycast' });
+            const backupItem = backupIPs[backupIndex];
+            if (!finalIPList.some(item => item.ip === backupItem.ip)) {
+                finalIPList.push({ ip: backupItem.ip, country: backupItem.country, ping: 18 + backupIndex * 2, isp: backupItem.isp });
             }
             backupIndex++;
         }
@@ -163,10 +170,11 @@ export default async function handler(request, response) {
             } catch(e){}
         }
 
-        // 4. 生成多節點 YAML
+        // 4. 生成多節點 YAML（節點名加上 IP 地區代碼）
         let proxyNodesYaml = '';
         finalIPList.forEach((item, index) => {
-            proxyNodesYaml += `  - name: "🚀 CF-WARP-優選-${clientCountry}-${index+1}"
+            const ipRegion = item.country || 'CF';
+            proxyNodesYaml += `  - name: "🚀 CF-WARP-優選-[${ipRegion}]-${index+1}"
     type: wireguard
     server: ${item.ip}
     port: 2408
@@ -222,6 +230,8 @@ ${proxyNodesYaml}`;
                 .bg-orange { background: #ff9500; }
                 .bg-green { background: #34c759; }
                 .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
+                .region-badge { background: #eaeaea; color: #444; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-weight: bold; font-size: 12px; }
+                .region-hk { background: #e8f5e9; color: #2e7d32; }
                 
                 table { width: 100%; border-collapse: collapse; margin-top: 10px; }
                 th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }
@@ -286,13 +296,13 @@ ${proxyNodesYaml}`;
                             </div>
                         </div>
 
-                        <button type="submit">💾 儲存並發佈到雲端（兼刷新網頁）</button>
+                        <button type="submit">💾 儲存並發佈到雲端</button>
                     </form>
 
                     <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
                         <form method="POST" style="display:inline;">
                             <input type="hidden" name="action" value="force_now">
-                            <button type="submit" class="force">🔄 ⚡ 唔等時間喇，依家立刻強制更新洗牌</button>
+                            <button type="submit" class="force">🔄 ⚡ 依家立刻強制更新洗牌</button>
                         </form>
                         <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 僅刷新網頁測速</button>
                         ${lockedPrivateKey ? `
@@ -311,6 +321,7 @@ ${proxyNodesYaml}`;
                             <tr>
                                 <th>節點順序</th>
                                 <th>實體 Anycast IP</th>
+                                <th>IP 歸屬地區</th>
                                 <th>實時延遲 (Ping)</th>
                                 <th>營運商 (ISP)</th>
                             </tr>
@@ -320,6 +331,11 @@ ${proxyNodesYaml}`;
                                 <tr>
                                     <td># ${index + 1}</td>
                                     <td class="mono" style="color:#0288d1;">${item.ip}</td>
+                                    <td>
+                                        <span class="region-badge ${item.country === 'HK' ? 'region-hk' : ''}">
+                                            ${item.country || 'UNKNOWN'}
+                                        </span>
+                                    </td>
                                     <td class="mono" style="color:${item.ping < 50 ? '#34c759':'#ff9500'};">${item.ping || '優'} ms</td>
                                     <td>${item.isp || 'Cloudflare'}</td>
                                 </tr>
