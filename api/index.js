@@ -1,15 +1,16 @@
 const crypto = require('crypto');
 const https = require('https');
 
-// 全局記憶體（計時器核心）
+// 全局記憶體
 let recentKeys = [];
 let lockedPrivateKey = ""; 
-let lastRotateTime = Date.now(); // 上次自動洗牌時間
+let lastRotateTime = Date.now();
 
-// 定時設定（預設：不啟用強制洗牌，每 1 小時動態換）
+// 定時與優選設定
 let useForceRotate = false;
-let rotateUnit = "h"; // s, m, h, d, w, y
+let rotateUnit = "h"; 
 let rotateValue = 1;
+let selectIPCount = 1; // 預設優選數量
 
 function cfPost(url, data) {
     return new Promise((resolve, reject) => {
@@ -37,7 +38,18 @@ function cfPost(url, data) {
     });
 }
 
-// 計算過期秒數
+function cfGet(url) {
+    return new Promise((resolve, reject) => {
+        https.get(url, (res) => {
+            let body = '';
+            res.on('data', (chunk) => body += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(body)); } catch(e) { resolve(null); }
+            });
+        }).on('error', (e) => reject(e));
+    });
+}
+
 function getRotateMs(value, unit) {
     const val = parseInt(value) || 1;
     switch(unit) {
@@ -55,7 +67,10 @@ export default async function handler(request, response) {
     const userAgent = request.headers['user-agent'] || '';
     const { method, query } = request;
 
-    // --- 網頁 POST 表單控制 ---
+    // 獲取遊客當前真實 IP 與地區
+    const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
+    const clientIP = request.headers['x-vercel-forwarded-for'] || '127.0.0.1';
+
     if (method === 'POST') {
         let body = '';
         await new Promise((resolve) => {
@@ -71,10 +86,11 @@ export default async function handler(request, response) {
                 useForceRotate = params.get('use_force') === 'true';
                 rotateUnit = params.get('rotate_unit') || 'h';
                 rotateValue = parseInt(params.get('rotate_value')) || 1;
+                selectIPCount = Math.max(1, Math.min(10, parseInt(params.get('ip_count')) || 1));
             } else if (action === 'unlock') {
                 lockedPrivateKey = "";
             } else if (action === 'force_now') {
-                lastRotateTime = 0; // 觸發立刻洗牌
+                lastRotateTime = 0;
             }
         } catch (e) {}
         response.writeHead(302, { Location: request.url });
@@ -82,59 +98,44 @@ export default async function handler(request, response) {
     }
 
     try {
-        // 核心邏輯：檢查時間有沒有過期
+        // 1. 處理 Key 的洗牌與調用
         const now = Date.now();
         const duration = getRotateMs(rotateValue, rotateUnit);
         const isExpired = (now - lastRotateTime) >= duration;
+        let shouldRotate = useForceRotate ? isExpired : (!lockedPrivateKey && isExpired);
 
-        let shouldRotate = false;
-
-        // 判斷是否需要洗牌
-        if (useForceRotate) {
-            // 情況 A：用左「強制勾選」，就算有 safe key 都照轉
-            if (isExpired) shouldRotate = true;
-        } else {
-            // 情況 B：無勾選強制
-            if (!lockedPrivateKey) {
-                // 無 safe key，跟隨時間去轉
-                if (isExpired) shouldRotate = true;
-            } else {
-                // 有 safe key，永遠不轉
-                shouldRotate = false;
-            }
-        }
-
-        // 執行洗牌或調用
         let realPrivateKey = "";
-        if (shouldRotate) {
-            // 時間到，轉生新 Key
+        if (shouldRotate || recentKeys.length === 0) {
             realPrivateKey = crypto.randomBytes(32).toString('base64');
-            lastRotateTime = now; // 重置計時器
-            
-            // 如果開了「強制勾選」而且有鎖定 key，洗牌時順便更新鎖定的 key 為這把新鑰
-            if (useForceRotate && lockedPrivateKey) {
-                lockedPrivateKey = realPrivateKey;
-            }
-
-            if (!recentKeys.includes(realPrivateKey)) {
-                recentKeys.unshift(realPrivateKey);
-                if (recentKeys.length > 10) recentKeys.pop();
-            }
+            lastRotateTime = now;
+            if (useForceRotate && lockedPrivateKey) lockedPrivateKey = realPrivateKey;
+            if (!recentKeys.includes(realPrivateKey)) recentKeys.unshift(realPrivateKey);
         } else {
-            // 未過期，或處於鎖定狀態
-            if (lockedPrivateKey) {
-                realPrivateKey = lockedPrivateKey;
-            } else {
-                // 沒鎖定也沒過期，拿清單最新的那一條，保持短時間內穩定
-                realPrivateKey = recentKeys[0] || crypto.randomBytes(32).toString('base64');
-                if (!recentKeys.includes(realPrivateKey)) recentKeys.unshift(realPrivateKey);
-            }
+            realPrivateKey = lockedPrivateKey || recentKeys[0];
         }
 
-        // 打去 CF 註冊免洗帳戶
+        if (recentKeys.length > 10) recentKeys = recentKeys.slice(0, 10);
+
+        // 2. 核心大數據優選 IP 撈取
+        let preferredIPList = [];
+        try {
+            const ipData = await cfGet('https://api.v2rayse.com/cf-ip');
+            if (ipData && ipData.info) {
+                // 根據當前定位過濾 IP
+                const matched = ipData.info.filter(item => item.country === clientCountry);
+                const sourceList = matched.length > 0 ? matched : ipData.info;
+                // 按 Ping 排序拿最優的 N 個
+                preferredIPList = sourceList.sort((a,b) => (a.ping || 999) - (b.ping || 999)).slice(0, selectIPCount);
+            }
+        } catch (e) {}
+
+        if (preferredIPList.length === 0) {
+            preferredIPList.push({ ip: '162.159.192.1', ping: 20, isp: 'Cloudflare' });
+        }
+
+        // 3. 打去 CF 註冊帳戶
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
-            "key": crypto.randomBytes(32).toString('base64'),
-            "install_id": "", "fcm_token": ""
+            "key": crypto.randomBytes(32).toString('base64'), "install_id": "", "fcm_token": ""
         });
 
         const peerPubKey = regData.config.peers[0].public_key;
@@ -152,20 +153,12 @@ export default async function handler(request, response) {
             } catch(e){}
         }
 
-        const nextRotateCountDown = Math.max(0, Math.round((duration - (now - lastRotateTime)) / 1000));
-
-        const stashYaml = `# =========================================================
-# ⚙️ [3X-UI WARP FUNCTION - AUTOMATIC ROTATION PANEL]
-# Private Key Mode: ${lockedPrivateKey ? "🔒 FIXED (Safe Key)" : "🔄 DYNAMIC"}
-# Force Rotate Checkbox: ${useForceRotate ? "✅ ON (Override Safe Key)" : "❌ OFF"}
-# Next Scheduled Rotation: In ${nextRotateCountDown} seconds
-# Active Private Key: ${realPrivateKey}
-# =========================================================
-
-proxies:
-  - name: "🚀 CF-WARP-Rotated"
+        // 4. 生成多節點 YAML
+        let proxyNodesYaml = '';
+        preferredIPList.forEach((item, index) => {
+            proxyNodesYaml += `  - name: "🚀 CF-WARP-優選-${clientCountry}-${index+1}"
     type: wireguard
-    server: 162.159.192.1
+    server: ${item.ip}
     port: 2408
     ip: ${clientIPv4}
     ipv6: ${clientIPv6}
@@ -174,100 +167,178 @@ proxies:
     reserved: ${reserved}
     udp: true
     remote-dns-resolve: true
-    mtu: 1280
-`;
+    mtu: 1280\n`;
+        });
+
+        const stashYaml = `# =========================================================
+# ⚙️ [3X-UI WARP FUNCTION - LIVE ROTATION & SPEEDTEST]
+# Your Network IP: ${clientIP} [Location: ${clientCountry}]
+# Total Optimized Endpoints Selected: ${preferredIPList.length} Nodes
+# Active Private Key: ${realPrivateKey}
+# =========================================================
+
+proxies:
+${proxyNodesYaml}`;
 
         if (userAgent.includes('Stash') || userAgent.includes('Clash') || query.format === 'yaml') {
             response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
             return response.status(200).send(stashYaml);
         }
 
+        const nextRotateCountDown = Math.max(0, Math.round((duration - (now - lastRotateTime)) / 1000));
+
         const html = `
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Auto-WIS 智能定時控制台</title>
+            <title>Auto-WIS 智能定時與優選控制台</title>
             <style>
-                body { font-family: -apple-system, sans-serif; background: #f4f6f9; color: #333; padding: 30px; }
-                .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; max-width: 750px; }
-                h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f0f0f0; padding-bottom: 10px; }
-                .row { margin-bottom: 15px; }
-                label { font-weight: bold; display: block; margin-bottom: 5px; }
-                input[type="text"], input[type="number"], select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-                input[type="text"] { width: 80%; font-family: monospace; }
-                button { background: #007aff; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; }
-                button.force { background: #34c759; margin-left: 10px; }
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; padding: 30px; margin: 0; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .card { background: white; padding: 25px; border-radius: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); margin-bottom: 25px; }
+                h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; display: flex; justify-content: space-between; align-items: center; }
+                .row { margin-bottom: 18px; }
+                label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
+                input[type="text"], input[type="number"], select { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+                input[type="text"] { width: 100%; font-family: monospace; background: #fafafa; }
+                .ip-input-group { display: flex; align-items: center; gap: 10px; }
+                button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.2s; }
+                button:hover { background: #0063cc; }
+                button.force { background: #34c759; }
+                button.force:hover { background: #28a745; }
                 button.unlock { background: #ff3b30; }
-                ol { padding-left: 20px; font-family: monospace; background: #fafafa; padding: 15px; border-radius: 6px; border: 1px solid #eee; }
-                pre { background: #222; color: #27c93f; padding: 15px; border-radius: 6px; overflow-x: auto; font-family: monospace; }
-                .status-tag { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; }
+                .status-tag { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; color: white; }
                 .bg-orange { background: #ff9500; }
                 .bg-green { background: #34c759; }
+                .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
+                
+                /* 排位對齊表格與列表 */
+                table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }
+                th { background: #f8f9fa; color: #666; font-weight: 600; }
+                td.mono { font-family: monospace; font-weight: bold; }
+                
+                ol.key-list { padding-left: 0; list-style: none; margin: 0; }
+                ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; }
+                ol.key-list li.active { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; font-weight: bold; }
+                
+                pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; }
             </style>
         </head>
         <body>
-            <div class="card">
-                <h2>⚙️ 智能控制面板（定時 + 鎖定設定）</h2>
-                <form method="POST">
-                    <input type="hidden" name="action" value="save_all">
-                    
-                    <div class="row">
-                        <label>1. Safe Private Key 鎖定框：</label>
-                        <input type="text" name="custom_key" value="${lockedPrivateKey}" placeholder="在此貼入你想鎖定的 Private Key（留空則完全走定時免洗模式）">
-                        ${lockedPrivateKey ? `<span class="status-tag bg-green">🔒 已鎖定</span>` : `<span class="status-tag bg-orange">🔄 免洗中</span>`}
-                    </div>
-
-                    <div class="row" style="background: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid #007aff;">
-                        <label style="color:#007aff;">2. ⏱️ 定時自動洗牌週期設定：</label>
-                        每 
-                        <input type="number" name="rotate_value" value="${rotateValue}" style="width: 60px;" min="1">
-                        <select name="rotate_unit">
-                            <option value="s" ${rotateUnit==='s'?'selected':''}>秒 (s)</option>
-                            <option value="m" ${rotateUnit==='m'?'selected':''}>分鐘 (m)</option>
-                            <option value="h" ${rotateUnit==='h'?'selected':''}>小時 (h)</option>
-                            <option value="d" ${rotateUnit==='d'?'selected':''}>天 (d)</option>
-                            <option value="w" ${rotateUnit==='w'?'selected':''}>周 (w)</option>
-                            <option value="y" ${rotateUnit==='y'?'selected':''}>年 (y)</option>
-                        </select>
-                        自動更換全新 WARP 免洗帳戶
-                        
-                        <div style="margin-top: 10px;">
-                            <input type="checkbox" id="use_force" name="use_force" value="true" ${useForceRotate?'checked':''}>
-                            <label for="use_force" style="display:inline; font-weight:normal; color:#ff3b30;">
-                                <strong>⚠️ 強制覆蓋勾選：</strong> 啟用後，就算上面填了 Safe Key，時間一到也【照樣強行洗牌轉生】！
-                            </label>
-                        </div>
-                    </div>
-
-                    <button type="submit">💾 儲存並套用全部設定</button>
-                </form>
-
-                <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
-                    <form method="POST" style="display:inline;">
-                        <input type="hidden" name="action" value="force_now">
-                        <button type="submit" class="force">⚡ 唔等時間喇，依家立刻強制洗牌一次</button>
-                    </form>
-                    ${lockedPrivateKey ? `
-                    <form method="POST" style="display:inline;">
-                        <input type="hidden" name="action" value="unlock">
-                        <button type="submit" class="unlock">🔓 清空 Safe Key</button>
-                    </form>` : ''}
+            <div class="container">
+                <!-- 第一部分：網路定位特徵 -->
+                <div class="card">
+                    <h2>🌐 你的當前連線定位 <span><span class="ip-badge">${clientIP}</span></span></h2>
+                    <p>Vercel 動態分析你目前身處：<strong style="color:#ff3b30; font-size:18px;">${clientCountry}</strong> 區。系統會自動調度與 ${clientCountry} 寬頻商路由最吻合的優選 Anycast 節點。</p>
                 </div>
-                
-                <p style="font-size: 13px; color: #666;">
-                    距離下一次自動洗牌倒數：<strong>${nextRotateCountDown} 秒</strong>（手機更新訂閱時如果時間到會自動執行）
-                </p>
-            </div>
 
-            <div class="card">
-                <h2>📋 最近 10 次生成的 Private Key 記錄歷史</h2>
-                <ol>${recentKeys.map(k => `<li>${k} ${k === realPrivateKey ? '🌟(當前生效)' : ''}</li>`).join('')}</ol>
-            </div>
+                <!-- 第二部分：智能控制面板 -->
+                <div class="card">
+                    <h2>⚙️ 智能控制台（定時洗牌 + 優選配置）</h2>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="save_all">
+                        
+                        <div class="row">
+                            <label>1. Safe Private Key 鎖定框：</label>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <input type="text" name="custom_key" value="${lockedPrivateKey}" placeholder="在此貼入固定 Key（留空走自動定時免洗模式）">
+                                ${lockedPrivateKey ? `<span class="status-tag bg-green" style="white-space:nowrap;">🔒 已鎖定</span>` : `<span class="status-tag bg-orange" style="white-space:nowrap;">🔄 免洗中</span>`}
+                            </div>
+                        </div>
 
-            <div class="card">
-                <h2>📱 最終 Stash YAML 預覽</h2>
-                <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                        <div class="row" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 15px; border-radius: 10px;">
+                            <label style="color:#007aff; margin-bottom:10px;">2. ⚡ 實時 Anycast IP 路由優選設定：</label>
+                            <div class="ip-input-group">
+                                <span>針對 ${clientCountry} 導出前</span>
+                                <input type="number" name="ip_count" value="${selectIPCount}" style="width: 70px; text-align:center;" min="1" max="10">
+                                <span>個最優 IP 節點（最大可設 10 個，會同時生成多個 Stash 節點供分流）</span>
+                            </div>
+                        </div>
+
+                        <div class="row" style="background: #f9f9f9; padding: 15px; border-radius: 10px; border-left: 4px solid #007aff;">
+                            <label style="color:#555;">3. ⏱️ 賬戶轉生週期：</label>
+                            每 
+                            <input type="number" name="rotate_value" value="${rotateValue}" style="width: 65px; text-align:center;" min="1">
+                            <select name="rotate_unit">
+                                <option value="s" ${rotateUnit==='s'?'selected':''}>秒 (s)</option>
+                                <option value="m" ${rotateUnit==='m'?'selected':''}>分鐘 (m)</option>
+                                <option value="h" ${rotateUnit==='h'?'selected':''}>小時 (h)</option>
+                                <option value="d" ${rotateUnit==='d'?'selected':''}>天 (d)</option>
+                                <option value="w" ${rotateUnit==='w'?'selected':''}>周 (w)</option>
+                                <option value="y" ${rotateUnit==='y'?'selected':''}>年 (y)</option>
+                            </select>
+                            自動洗牌
+                            
+                            <div style="margin-top: 10px;">
+                                <input type="checkbox" id="use_force" name="use_force" value="true" ${useForceRotate?'checked':''}>
+                                <label for="use_force" style="display:inline; font-weight:normal; color:#ff3b30; cursor:pointer;">
+                                    <strong>強制覆蓋：</strong> 即使開啟了 Safe Key 鎖定，時間到也強行更換新帳戶！
+                                </label>
+                            </div>
+                        </div>
+
+                        <button type="submit">💾 儲存並發佈到雲端</button>
+                    </form>
+
+                    <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
+                        <form method="POST" style="display:inline;">
+                            <input type="hidden" name="action" value="force_now">
+                            <button type="submit" class="force">⚡ 立刻強制洗牌一次</button>
+                        </form>
+                        ${lockedPrivateKey ? `
+                        <form method="POST" style="display:inline; margin-left:10px;">
+                            <input type="hidden" name="action" value="unlock">
+                            <button type="submit" class="unlock">🔓 解鎖 Safe Key</button>
+                        </form>` : ''}
+                    </div>
+                    <p style="font-size:12px; color:#777; margin-top:10px; margin-bottom:0;">⌛ 洗牌倒數：<strong>${nextRotateCountDown} 秒</strong></p>
+                </div>
+
+                <!-- 第三部分：當前優選 IP 結果 -->
+                <div class="card">
+                    <h2>📊 當前篩選出的測速大數據（與你最合拍的優選節點）</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>節點順序</th>
+                                <th>實體 Anycast IP</th>
+                                <th>實時延遲 (Ping)</th>
+                                <th>營運商 (ISP)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${preferredIPList.map((item, index) => `
+                                <tr>
+                                    <td># ${index + 1}</td>
+                                    <td class="mono" style="color:#0288d1;">${item.ip}</td>
+                                    <td class="mono" style="color:${item.ping < 50 ? '#34c759':'#ff9500'};">${item.ping || '優'} ms</td>
+                                    <td>${item.isp || 'Cloudflare'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 第四部分：對齊版 Key 歷史記錄清單 -->
+                <div class="card">
+                    <h2>📋 最近十次生成的 Private Key 記錄歷史</h2>
+                    <ol class="key-list">
+                        ${recentKeys.map((k, idx) => `
+                            <li class="${k === realPrivateKey ? 'active' : ''}">
+                                <span>序列 ${idx + 1}：${k}</span>
+                                <span>${k === realPrivateKey ? '🌟 當前生效' : '📜 歷史'}</span>
+                            </li>
+                        `).join('')}
+                    </ol>
+                </div>
+
+                <!-- 第五部分：Stash YAML 輸出預覽 -->
+                <div class="card">
+                    <h2>📱 最終 Stash YAML 輸出 (已智能過濾網頁)</h2>
+                    <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                </div>
             </div>
         </body>
         </html>
