@@ -132,6 +132,57 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
+// Helper: 用來單獨打包生成 YAML 文本，供主路由和 AJAX 接口共用
+function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
+    let reservedYamlArray = "[0, 0, 0]";
+    if (finalKeyObj && finalKeyObj.reserved) {
+        try {
+            const cleanNums = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
+            reservedYamlArray = `[${cleanNums.join(', ')}]`;
+        } catch(e) {
+            reservedYamlArray = "[0, 0, 0]";
+        }
+    }
+
+    let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
+    let stashProxiesSection = "proxies:\n";
+    let proxyNames = [];
+    
+    finalIPList.forEach((item, index) => {
+        const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
+        proxyNames.push(nodeName);
+        
+        stashProxiesSection += `  - name: "${nodeName}"\n` +
+                               `    type: wireguard\n` +
+                               `    server: ${item.ip}\n` +
+                               `    port: ${item.port}\n` +
+                               `    ip: 172.16.0.2/32\n` +
+                               `    ipv6: ${localIPv6}\n` +
+                               `    public-key: "${finalKeyObj.publicKey}"\n` +
+                               `    private-key: "${finalKeyObj.privateKey}"\n` +
+                               `    reserved: ${reservedYamlArray}\n` +
+                               `    udp: true\n` +
+                               `    mtu: 1420\n`;
+    });
+
+    let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
+    proxyNames.forEach(name => { stashGroupSection += `    - "${name}"\n`; });
+    stashGroupSection += `    - DIRECT\n`;
+
+    let processedCustomRules = customRulesText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'))
+        .map(line => `  - ${line}`)
+        .join('\n');
+
+    let stashRulesSection = `rules:\n`;
+    if (processedCustomRules) stashRulesSection += `${processedCustomRules}\n`;
+    stashRulesSection += `  - GEOIP,private,DIRECT\n  - MATCH,PROXY`;
+
+    return `${stashProxiesSection}\n${stashGroupSection}\n${stashRulesSection}`;
+}
+
 // ==========================================
 // 🚀 3. 主路由邏輯
 // ==========================================
@@ -153,6 +204,15 @@ export default async function handler(request, response) {
         }
     }
 
+    // 取得當前鎖定套用中嘅 Key
+    let finalKeyObj = config.safeKey;
+    if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
+        finalKeyObj = config.latestRegisteredObj;
+    } else if (config.currentActiveId.startsWith("history_") && config.keyHistoryPool) {
+        const idx = parseInt(config.currentActiveId.split("_")[1]);
+        if (config.keyHistoryPool[idx]) finalKeyObj = config.keyHistoryPool[idx];
+    }
+
     // ==========================================
     // ⚙️ 4. 處理控制台提交
     // ==========================================
@@ -165,6 +225,20 @@ export default async function handler(request, response) {
         try {
             const params = new URLSearchParams(body);
             const action = params.get('action');
+            
+            // 🔄 核心局部刷新優化：如果只是要立刻更換 IP 池
+            if (action === 'force_rotate_now') {
+                const freshIPList = generateEdgeTunnelIPs(config.selectIPCount);
+                const freshYaml = buildStashYaml(freshIPList, finalKeyObj, config.customRulesText);
+                
+                // 直接向前端回傳純 JSON 數據，不重整網頁、不影響計時器和金鑰
+                response.setHeader('Content-Type', 'application/json');
+                return response.status(200).send(JSON.stringify({
+                    success: true,
+                    ipList: freshIPList,
+                    yaml: freshYaml
+                }));
+            }
             
             if (action === 'save_settings') {
                 const selectedId = params.get('active_key_id') || "safe";
@@ -198,9 +272,6 @@ export default async function handler(request, response) {
                     config.currentActiveId = "latest"; 
                     if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
                 }
-            } else if (action === 'force_rotate_now') {
-                // 🔄 只更新 IP Pool：不重置 lastRotateTime 避免觸發計時器換 Key，僅利用 API 請求時實時碰撞刷新 IP
-                // 網頁刷新時 finalIPList 就會自動洗牌，因此這裡只需要引導頁面刷新即可
             }
             await saveConfig(config);
         } catch (e) {}
@@ -223,70 +294,15 @@ export default async function handler(request, response) {
             if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
             await saveConfig(config);
         }
-    }
-
-    let finalKeyObj = config.safeKey;
-    if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
-        finalKeyObj = config.latestRegisteredObj;
-    } else if (config.currentActiveId.startsWith("history_") && config.keyHistoryPool) {
-        const idx = parseInt(config.currentActiveId.split("_")[1]);
-        if (config.keyHistoryPool[idx]) finalKeyObj = config.keyHistoryPool[idx];
+        // 換完 Key 後重新對齊對象
+        if (config.currentActiveId === "latest") finalKeyObj = config.latestRegisteredObj;
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (精準修正縮進對齊與強型別轉換)
+    // 🍏 6. 構造 Stash YAML
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
-
-    let reservedYamlArray = "[0, 0, 0]";
-    if (finalKeyObj && finalKeyObj.reserved) {
-        try {
-            const cleanNums = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
-            reservedYamlArray = `[${cleanNums.join(', ')}]`;
-        } catch(e) {
-            reservedYamlArray = "[0, 0, 0]";
-        }
-    }
-
-    let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
-
-    let stashProxiesSection = "proxies:\n";
-    let proxyNames = [];
-    finalIPList.forEach((item, index) => {
-        const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
-        proxyNames.push(nodeName);
-        
-        // 💡 遵循 Edgetunnel/3xui 規範：統一用 2 空格縮進，屬性 4 空格縮進，徹底防止 unmarshal
-        stashProxiesSection += `  - name: "${nodeName}"\n` +
-                               `    type: wireguard\n` +
-                               `    server: ${item.ip}\n` +
-                               `    port: ${item.port}\n` +
-                               `    ip: 172.16.0.2/32\n` +
-                               `    ipv6: ${localIPv6}\n` +
-                               `    public-key: "${finalKeyObj.publicKey}"\n` +
-                               `    private-key: "${finalKeyObj.privateKey}"\n` +
-                               `    reserved: ${reservedYamlArray}\n` +
-                               `    udp: true\n` +
-                               `    mtu: 1420\n`;
-    });
-
-    // 💡 修正對齊：下方的陣列元素統一縮進為 4 個空格，與 proxies 完美切合
-    let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
-    proxyNames.forEach(name => { stashGroupSection += `    - "${name}"\n`; });
-    stashGroupSection += `    - DIRECT\n`;
-
-    let processedCustomRules = config.customRulesText
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'))
-        .map(line => `  - ${line}`)
-        .join('\n');
-
-    let stashRulesSection = `rules:\n`;
-    if (processedCustomRules) stashRulesSection += `${processedCustomRules}\n`;
-    stashRulesSection += `  - GEOIP,private,DIRECT\n  - MATCH,PROXY`;
-
-    const fullStashYaml = `${stashProxiesSection}\n${stashGroupSection}\n${stashRulesSection}`;
+    const fullStashYaml = buildStashYaml(finalIPList, finalKeyObj, config.customRulesText);
 
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
@@ -334,7 +350,7 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.1</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.2</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
                 <span style="color: #34c759;">🟢 頁面已同步更新</span>
             </div>
 
@@ -407,10 +423,7 @@ export default async function handler(request, response) {
                 </form>
                 
                 <div style="margin-top: 15px; border-top:1px solid #eee; padding-top:15px;">
-                    <form method="POST" style="display:inline;">
-                        <input type="hidden" name="action" value="force_rotate_now">
-                        <button type="submit" class="force">🔄 ⚡ 依家立刻強制更換隨機 IP池</button>
-                    </form>
+                    <button type="button" class="force" id="btn-async-rotate">🔄 ⚡ 依家立刻強制更換隨機 IP池</button>
                     <p style="font-size:12px; color:#777; margin-top:8px;">⏳ 距離下一次自動交棒剩餘：<strong>${nextRotateCountDown} 秒</strong></p>
                 </div>
             </div>
@@ -419,7 +432,7 @@ export default async function handler(request, response) {
                 <h2>📊 EdgeTunnel 實時網段隨機生成 IP (刷新即全變)</h2>
                 <table>
                     <thead><tr><th>順序</th><th>隨機 Anycast IP</th><th>Port</th></tr></thead>
-                    <tbody>
+                    <tbody id="ip-table-body">
                         ${finalIPList.map((item, index) => `
                             <tr><td># ${index + 1}</td><td class="mono" style="color:#0288d1;">${item.ip}</td><td class="mono">${item.port}</td></tr>
                         `).join('')}
@@ -432,7 +445,7 @@ export default async function handler(request, response) {
                 <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">🍏 點擊複製：${hostUrl}?type=stash</div>
             </div>
 
-            <div class="card"><details><summary>🔽 點擊展開 / 查看當前純淨 YAML 配置</summary><pre>${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></details></div>
+            <div class="card"><details><summary>🔽 點擊展開 / 查看當前純淨 YAML 配置</summary><pre id="yaml-preview">${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></details></div>
         </div>
         
         <script>
@@ -441,6 +454,42 @@ export default async function handler(request, response) {
                 const now = new Date();
                 document.getElementById('live-clock').innerText = now.toLocaleString('zh-HK');
             }, 1000);
+
+            // 💡 異步局部刷新邏輯：只更新 IP 表格和 YAML 預覽，不刷新網頁
+            document.getElementById('btn-async-rotate').addEventListener('click', async function() {
+                const btn = this;
+                btn.disabled = true;
+                btn.innerText = "⏳ 正在洗牌更換中...";
+                
+                try {
+                    const response = await fetch('', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: 'action=force_rotate_now'
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            // 1. 動態重組並更新 IP 列表表格
+                            let tableHtml = '';
+                            data.ipList.forEach((item, index) => {
+                                tableHtml += \`<tr><td># \${index + 1}</td><td class="mono" style="color:#0288d1;">\${item.ip}</td><td class="mono">\${item.port}</td></tr>\`;
+                            });
+                            document.getElementById('ip-table-body').innerHTML = tableHtml;
+                            
+                            // 2. 動態更新下方展開的 YAML 代碼框
+                            const escapedYaml = data.yaml.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                            document.getElementById('yaml-preview').innerHTML = escapedYaml;
+                        }
+                    }
+                } catch (e) {
+                    console.error("局部刷新失敗: ", e);
+                } finally {
+                    btn.disabled = false;
+                    btn.innerText = "🔄 ⚡ 依家立刻強制更換隨機 IP池";
+                }
+            });
         </script>
     </body>
     </html>
