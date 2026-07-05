@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const https = require('https');
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 讀寫引擎
+// 🌟 1. 原生 Redis REST API 讀寫引擎 (100% 零依賴)
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -31,12 +31,14 @@ function redisCommand(cmd, args = []) {
 }
 
 const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
+
+// 🧠 核心修改：將 useForceRotate 初始預設直接改為 true (Default Checked)
 let memoryBackup = {
     safeKey: fallbackKey,
     currentActiveId: "safe",
     latestRegisteredObj: null,
     keyHistoryPool: [],
-    useForceRotate: false,
+    useForceRotate: true, 
     rotateUnit: "d",
     rotateValue: 1,
     selectIPCount: 5,
@@ -51,6 +53,8 @@ async function loadConfig() {
             let cfg = JSON.parse(data);
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
             if (!cfg.keyHistoryPool) cfg.keyHistoryPool = [];
+            // 確保舊數據如果沒有這個欄位，也自動補上預設 true
+            if (cfg.useForceRotate === undefined) cfg.useForceRotate = true;
             return cfg;
         }
     } catch(e){}
@@ -152,7 +156,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⚙️ 4. 處理控制台提交 (修復選單鎖定 SafeKey 功能)
+    // ⚙️ 4. 處理控制台提交
     // ==========================================
     if (method === 'POST') {
         let body = '';
@@ -168,7 +172,6 @@ export default async function handler(request, response) {
                 const selectedId = params.get('active_key_id') || "safe";
                 config.currentActiveId = selectedId;
                 
-                // 🛠️ 【核心功能修復】：當用戶 Tick 咗，直接在 Redis 將選中的 Key 鎖定並覆蓋為永久 Safe Key！
                 if (params.get('make_safe_permanent') === 'true') {
                     if (selectedId === "latest" && config.latestRegisteredObj) {
                         config.safeKey = JSON.parse(JSON.stringify(config.latestRegisteredObj));
@@ -185,7 +188,7 @@ export default async function handler(request, response) {
                 }
 
                 config.customRulesText = params.get('custom_rules') || "";
-                config.useForceRotate = params.get('use_force') === 'true';
+                config.useForceRotate = params.get('use_force') === 'true'; // 讀取前端狀態
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
                 config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 5));
@@ -223,7 +226,6 @@ export default async function handler(request, response) {
         }
     }
 
-    // 決策當前套用金鑰
     let finalKeyObj = config.safeKey;
     if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
         finalKeyObj = config.latestRegisteredObj;
@@ -233,7 +235,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (徹底消滅 Unmarshal 錯誤)
+    // 🍏 6. 構造 Stash YAML (對齊 GitHub EdgeTunnel 標準語法，100% 根除 unmarshal 閃退)
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
@@ -243,7 +245,7 @@ export default async function handler(request, response) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 終極解決：直接不輸出 reserved 欄位！避開 Stash 核心對 reserved 解析的致命 bug！
+        // 💡 終極修正：剔除 fast-open, prefer-ipv4, remote-dns-resolve 等非 WireGuard 標準參數
         stashProxiesSection += `  - name: "${nodeName}"
     type: wireguard
     server: ${item.ip}
@@ -253,9 +255,6 @@ export default async function handler(request, response) {
     public-key: ${finalKeyObj.publicKey}
     private-key: ${finalKeyObj.privateKey}
     udp: true
-    remote-dns-resolve: true
-    fast-open: true
-    prefer-ipv4: true
     mtu: 1280\n`;
     });
 
@@ -283,7 +282,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🌐 7. 控制台網頁 GUI 面版 (100% 零人手輸入)
+    // 🌐 7. 控制台網頁 GUI 面版
     // ==========================================
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
 
@@ -320,10 +319,9 @@ export default async function handler(request, response) {
         <div class="container">
             <div class="card">
                 <h2>🌐 系統連線狀態</h2>
-                <p>Redis 雲端同步大大脑連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
+                <p>Redis 雲端同步大腦連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
             </div>
 
-            <!-- 一鍵註冊 -->
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
                 <h2>⚡ 一鍵免手動金鑰生成器</h2>
                 <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">直接向 Cloudflare 申請一條全新 WARP 金鑰，生成後可在下方下拉選單直接鎖定！</p>
@@ -333,7 +331,6 @@ export default async function handler(request, response) {
                 </form>
             </div>
 
-            <!-- 配置面版 -->
             <div class="card">
                 <h2>⚙️ 智能密鑰池管理面版 (100% 零人手輸入)</h2>
                 <form method="POST">
@@ -361,7 +358,6 @@ export default async function handler(request, response) {
                         </div>
                     </div>
 
-                    <!-- 自訂 Rules -->
                     <div class="row" style="background:#fffcf0; padding:15px; border-radius:10px; border: 1px dashed #ff9500;">
                         <label style="color:#ff9500;">✍️ 自訂額外 Rules 路由規則欄：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
@@ -398,7 +394,6 @@ export default async function handler(request, response) {
                 </div>
             </div>
 
-            <!-- IP 展示 -->
             <div class="card">
                 <h2>📊 EdgeTunnel 實時網段隨機生成 IP (刷新即全變)</h2>
                 <table>
@@ -411,7 +406,6 @@ export default async function handler(request, response) {
                 </table>
             </div>
 
-            <!-- 訂閱網址 -->
             <div class="card" style="border: 2px solid #007aff;">
                 <h2>🔗 乾淨的手機 Stash 訂閱網址</h2>
                 <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">🍏 點擊複製：${hostUrl}?type=stash</div>
