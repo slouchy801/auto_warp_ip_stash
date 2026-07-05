@@ -237,13 +237,17 @@ export default async function handler(request, response) {
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
-    // 把資料庫的 reserved 字串例如 "195,24,138" 轉換為 YAML 陣列格式 [195, 24, 138]
-    let reservedYamlArray = "[0,0,0]";
-    if (finalKeyObj.reserved) {
-        reservedYamlArray = `[${finalKeyObj.reserved}]`;
+    // 強制將 "195,24,138" 嚴格切開並轉化為純數字陣列，徹底防止 YAML 解析成字串而 unmarshal
+    let reservedYamlArray = "[0, 0, 0]";
+    if (finalKeyObj && finalKeyObj.reserved) {
+        try {
+            const cleanNums = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
+            reservedYamlArray = `[${cleanNums.join(', ')}]`;
+        } catch(e) {
+            reservedYamlArray = "[0, 0, 0]";
+        }
     }
 
-    // 如果賬戶沒有特別回傳 IPv6，採用 3x-ui 俾嘅實質分配作保底
     let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
 
     let stashProxiesSection = "proxies:\n";
@@ -252,15 +256,15 @@ export default async function handler(request, response) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 縮進硬修復：精準補上 reserved、修正 ip/ipv6 路由格式與 3x-ui 規格相同（MTU: 1420）
+        // 💡 修正兩格標準縮進，確保 reserved 輸出為純數字陣列（例：[195, 24, 138]）
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
                                `    port: ${item.port}\n` +
                                `    ip: 172.16.0.2/32\n` +
                                `    ipv6: ${localIPv6}\n` +
-                               `    public-key: ${finalKeyObj.publicKey}\n` +
-                               `    private-key: ${finalKeyObj.privateKey}\n` +
+                               `    public-key: "${finalKeyObj.publicKey}"\n` +
+                               `    private-key: "${finalKeyObj.privateKey}"\n` +
                                `    reserved: ${reservedYamlArray}\n` +
                                `    udp: true\n` +
                                `    mtu: 1420\n`;
