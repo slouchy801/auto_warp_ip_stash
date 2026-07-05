@@ -6,11 +6,11 @@ let recentKeys = [];
 let lockedPrivateKey = ""; 
 let lastRotateTime = Date.now();
 
-// 定時與優選設定（預設為 1 天）
+// 定時與優選設定（根據要求：預設改為 1 天，優選數量預設為 3）
 let useForceRotate = false;
 let rotateUnit = "d"; 
 let rotateValue = 1;  
-let selectIPCount = 1; 
+let selectIPCount = 3; // 預設顯示 3 條 IP
 
 const backupIPs = [
     { ip: '162.159.192.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
@@ -77,16 +77,17 @@ function getRotateMs(value, unit) {
 }
 
 export default async function handler(request, response) {
-    const userAgent = request.headers['user-agent'] || '';
+    const userAgent = (request.headers['user-agent'] || '').toLowerCase();
     const { method, query } = request;
 
     const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
     const clientIP = request.headers['x-vercel-forwarded-for'] || '127.0.0.1';
     
-    // 自適應判斷客戶端格式要求
     const hostUrl = `https://${request.headers.host}${request.url.split('?')[0]}`;
-    const isStashOrClash = userAgent.includes('Stash') || userAgent.includes('Clash') || query.type === 'clash' || query.type === 'stash';
+    
+    // 精準判定分流格式
     const isSingBox = userAgent.includes('sing-box') || query.type === 'singbox';
+    const isStashOrClash = userAgent.includes('stash') || userAgent.includes('clash') || query.type === 'stash' || query.type === 'clash';
 
     if (method === 'POST') {
         let body = '';
@@ -103,7 +104,7 @@ export default async function handler(request, response) {
                 useForceRotate = params.get('use_force') === 'true';
                 rotateUnit = params.get('rotate_unit') || 'd';
                 rotateValue = parseInt(params.get('rotate_value')) || 1;
-                selectIPCount = Math.max(1, Math.min(10, parseInt(params.get('ip_count')) || 1));
+                selectIPCount = Math.max(1, Math.min(10, parseInt(params.get('ip_count')) || 3));
             } else if (action === 'unlock') {
                 lockedPrivateKey = "";
             } else if (action === 'force_now') {
@@ -153,7 +154,7 @@ export default async function handler(request, response) {
         }
         finalIPList = finalIPList.slice(0, selectIPCount);
 
-        // 打去 CF 註冊帳戶
+        // 打去 CF 註冊帳戶（3x-ui 核心註冊邏輯）
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": crypto.randomBytes(32).toString('base64'), "install_id": "", "fcm_token": ""
         });
@@ -173,12 +174,11 @@ export default async function handler(request, response) {
             } catch(e){}
         }
 
-        // --- 輸出 A：Stash / Clash YAML 格式 ---
-        if (isStashOrClash) {
-            let proxyNodesYaml = '';
-            finalIPList.forEach((item, index) => {
-                const ipRegion = item.country || 'CF';
-                proxyNodesYaml += `  - name: "🚀 CF-WARP-[${ipRegion}]-${index+1}"
+        // 預先生成 Stash/Clash YAML 字串
+        let proxyNodesYaml = '';
+        finalIPList.forEach((item, index) => {
+            const ipRegion = item.country || 'CF';
+            proxyNodesYaml += `  - name: "🚀 CF-WARP-[${ipRegion}]-${index+1}"
     type: wireguard
     server: ${item.ip}
     port: 2408
@@ -190,14 +190,16 @@ export default async function handler(request, response) {
     udp: true
     remote-dns-resolve: true
     mtu: 1280\n`;
-            });
+        });
+        const stashYaml = `# YAML Config for Stash/Clash\nproxies:\n${proxyNodesYaml}`;
 
-            const stashYaml = `# YAML Config for Stash/Clash\nproxies:\n${proxyNodesYaml}`;
+        // --- 🤖 手機 Stash / Clash 直接更新時返回 YAML ---
+        if (isStashOrClash) {
             response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
             return response.status(200).send(stashYaml);
         }
 
-        // --- 輸出 B：Sing-Box JSON 格式 ---
+        // --- 🤖 手機 Sing-Box 直接更新時返回 JSON (完全比照 3x-ui 結構) ---
         if (isSingBox) {
             const outbounds = finalIPList.map((item, index) => {
                 const ipRegion = item.country || 'CF';
@@ -214,15 +216,11 @@ export default async function handler(request, response) {
                     udp_fragment: true
                 };
             });
-
-            const singBoxJson = {
-                outbounds: outbounds
-            };
             response.setHeader('Content-Type', 'application/json; charset=utf-8');
-            return response.status(200).send(JSON.stringify(singBoxJson, null, 2));
+            return response.status(200).send(JSON.stringify({ outbounds: outbounds }, null, 2));
         }
 
-        // --- 輸出 C：瀏覽器通用控制台網頁 ---
+        // --- 🌐 瀏覽器打開：顯示 GUI 面板 ---
         const nextRotateCountDown = Math.max(0, Math.round((duration - (now - lastRotateTime)) / 1000));
 
         const html = `
@@ -262,6 +260,10 @@ export default async function handler(request, response) {
                 ol.key-list { padding-left: 0; list-style: none; margin: 0; }
                 ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; }
                 ol.key-list li.active { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; font-weight: bold; }
+                
+                summary { font-weight: bold; color: #007aff; cursor: pointer; padding: 10px 0; font-size: 16px; outline: none; user-select: none; }
+                summary:hover { color: #0063cc; }
+                pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; margin-top: 10px; }
             </style>
         </head>
         <body>
@@ -273,7 +275,7 @@ export default async function handler(request, response) {
 
                 <div class="card" style="border: 2px solid #007aff;">
                     <h2 style="color:#007aff;">🔗 手機軟體專屬動態訂閱 URL (點擊複製)</h2>
-                    <p style="font-size:13px; color:#555;">直接將以下對應網址複製到你手機 App 的訂閱/配置欄位內。每次手機更新，均會觸發後台動態優選最新 IP！</p>
+                    <p style="font-size:13px; color:#555;">複製以下網址到手機 App 內，每次更新都會自動根據當時手機 IP 重新測速和優選！</p>
                     
                     <div class="row">
                         <label>🍏 Stash / 🎛️ Clash 專用動態訂閱網址：</label>
@@ -304,7 +306,7 @@ export default async function handler(request, response) {
                             <div class="ip-input-group">
                                 <span>針對 ${clientCountry} 導出前</span>
                                 <input type="number" name="ip_count" value="${selectIPCount}" style="width: 70px; text-align:center;" min="1" max="10">
-                                <span>個最優 IP 節點</span>
+                                <span>個最優 IP 節點（預設值為 3）</span>
                             </div>
                         </div>
 
@@ -321,13 +323,6 @@ export default async function handler(request, response) {
                                 <option value="y" ${rotateUnit==='y'?'selected':''}>年 (y)</option>
                             </select>
                             自動洗牌
-                            
-                            <div style="margin-top: 10px;">
-                                <input type="checkbox" id="use_force" name="use_force" value="true" ${useForceRotate?'checked':''}>
-                                <label for="use_force" style="display:inline; font-weight:normal; color:#ff3b30; cursor:pointer;">
-                                    <strong>強制覆蓋：</strong> 即使開啟了 Safe Key 鎖定，時間到也強行更換新帳戶！
-                                </label>
-                            </div>
                         </div>
 
                         <button type="submit">💾 儲存並發佈到雲端</button>
@@ -339,11 +334,6 @@ export default async function handler(request, response) {
                             <button type="submit" class="force">🔄 ⚡ 依家立刻強制更新洗牌</button>
                         </form>
                         <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 僅刷新網頁測速</button>
-                        ${lockedPrivateKey ? `
-                        <form method="POST" style="display:inline; margin-left:10px;">
-                            <input type="hidden" name="action" value="unlock">
-                            <button type="submit" class="unlock">🔓 解鎖 Safe Key</button>
-                        </form>` : ''}
                     </div>
                     <p style="font-size:12px; color:#777; margin-top:10px; margin-bottom:0;">⌛ 洗牌倒數：<strong>${nextRotateCountDown} 秒</strong></p>
                 </div>
@@ -388,6 +378,13 @@ export default async function handler(request, response) {
                             </li>
                         `).join('')}
                     </ol>
+                </div>
+
+                <div class="card">
+                    <details>
+                        <summary>🔽 點擊展開 / 收起最終 Stash YAML 輸出原始碼</summary>
+                        <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                    </details>
                 </div>
             </div>
         </body>
