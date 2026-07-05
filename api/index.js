@@ -2,61 +2,36 @@ const crypto = require('crypto');
 const https = require('https');
 
 // ==========================================
-// 🌟 1. 全局記憶體與控制變數（所有核心功能完美回歸）
+// 🌟 1. 全局記憶體與控制變數（完美功能核心，死記不忘）
 // ==========================================
 let recentKeys = [];
-let lockedPrivateKey = ""; 
 let lastRotateTime = Date.now();
 
 let useForceRotate = false;
 let rotateUnit = "d"; 
 let rotateValue = 1;  
-let selectIPCount = 3; // 預設 3 條優選 IP
+let selectIPCount = 3; // 預設撈取 3 條優選 IP
 
-// 穩定嘅備用優選 IP
-const backupIPs = [
-    { ip: '162.159.192.1', country: 'GLOBAL' },
-    { ip: '162.159.193.1', country: 'GLOBAL' },
-    { ip: '162.159.195.1', country: 'GLOBAL' }
-];
+// 💡 核心修正：固定你的 WARP 賬戶資訊，拒絕每次動態註冊！
+let lockedPrivateKey = "你的_WARP_PRIVATE_KEY_請在控制台修改"; 
+let lockedPublicKey = "你的_WARP_PUBLIC_KEY_請在控制台修改";
+let lockedReserved = "0,0,0"; // 支援 3x-ui 格式的 0,0,0 或 hex
 
-// 封裝 POST 請求（用於向 Cloudflare 官方註冊 WARP 帳戶）
-function cfPost(url, data) {
-    return new Promise((resolve, reject) => {
-        const u = new URL(url);
-        const postData = JSON.stringify(data);
+// 💡 新增功能：自訂 Rules 儲存變數
+let customRulesText = "# 在此輸入自訂 Rules，每行一條\n# 例如：\n# - DOMAIN-SUFFIX,google.com,PROXY";
+
+// 封裝 GET 請求（支援超時，用於從 GitHub 撈取海量優選大數據）
+function httpGet(url) {
+    return new Promise((resolve) => {
         const options = {
-            hostname: u.hostname, path: u.pathname, method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'okhttp/3.12.1',
-                'Content-Length': Buffer.byteLength(postData)
-            }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 3000
         };
-        const req = https.request(options, (res) => {
+        https.get(url, options, (res) => {
             let body = '';
             res.on('data', (chunk) => body += chunk);
-            res.on('end', () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) resolve(JSON.parse(body));
-                else reject(new Error(`CF Status: ${res.statusCode}`));
-            });
-        });
-        req.on('error', (e) => reject(e));
-        req.write(postData);
-        req.end();
-    });
-}
-
-// 封裝 GET 請求（用於撈取大數據優選 IP）
-function cfGet(url) {
-    return new Promise((resolve, reject) => {
-        https.get(url, (res) => {
-            let body = '';
-            res.on('data', (chunk) => body += chunk);
-            res.on('end', () => {
-                try { resolve(JSON.parse(body)); } catch(e) { resolve(null); }
-            });
-        }).on('error', (e) => reject(e));
+            res.on('end', () => resolve(body));
+        }).on('error', () => resolve(''));
     });
 }
 
@@ -85,7 +60,7 @@ export default async function handler(request, response) {
     const isStashOrClash = userAgent.includes('stash') || userAgent.includes('clash') || query.type === 'stash' || query.type === 'clash';
 
     // ==========================================
-    // ⚙️ 2. 處理控制台 POST 表單提交（原功能描述完整回歸）
+    // ⚙️ 2. 處理控制台 POST 表單提交（原功能 + 賬戶鎖定 + 自訂 Rules）
     // ==========================================
     if (method === 'POST') {
         let body = '';
@@ -99,12 +74,14 @@ export default async function handler(request, response) {
             
             if (action === 'save_all') {
                 lockedPrivateKey = params.get('custom_key') || "";
+                lockedPublicKey = params.get('public_key') || "";
+                lockedReserved = params.get('reserved_val') || "0,0,0";
+                customRulesText = params.get('custom_rules') || "";
+                
                 useForceRotate = params.get('use_force') === 'true';
                 rotateUnit = params.get('rotate_unit') || 'd';
                 rotateValue = parseInt(params.get('rotate_value')) || 1;
-                selectIPCount = Math.max(1, Math.min(10, parseInt(params.get('ip_count')) || 3));
-            } else if (action === 'unlock') {
-                lockedPrivateKey = "";
+                selectIPCount = Math.max(1, Math.min(20, parseInt(params.get('ip_count')) || 3));
             } else if (action === 'force_now') {
                 lastRotateTime = 0;
             }
@@ -115,97 +92,101 @@ export default async function handler(request, response) {
 
     try {
         // ==========================================
-        // ⏱️ 3. 轉生與密鑰控制核心（定時免洗自動輪替）
+        // ⏱️ 3. 轉生與密鑰歷史控制核心（Edgetunnel 洗牌模式）
         // ==========================================
         const now = Date.now();
         const duration = getRotateMs(rotateValue, rotateUnit);
         const isExpired = (now - lastRotateTime) >= duration;
-        let shouldRotate = useForceRotate ? isExpired : (!lockedPrivateKey && isExpired);
 
-        let realPrivateKey = "";
-        if (shouldRotate || recentKeys.length === 0) {
-            // 生成標準的 WireGuard 私鑰格式 Base64
-            realPrivateKey = crypto.randomBytes(32).toString('base64');
+        // 歷史記錄器：記錄每次成功更換優選 IP 的時間點與當前 PrivateKey
+        if (isExpired || recentKeys.length === 0) {
             lastRotateTime = now;
-            if (useForceRotate && lockedPrivateKey) lockedPrivateKey = realPrivateKey;
-            if (!recentKeys.includes(realPrivateKey)) recentKeys.unshift(realPrivateKey);
-        } else {
-            realPrivateKey = lockedPrivateKey || recentKeys[0];
+            const logEntry = `${new Date().toLocaleTimeString()} - 使用 Key: ${lockedPrivateKey.slice(0,8)}...`;
+            if (!recentKeys.includes(logEntry)) recentKeys.unshift(logEntry);
         }
-
         if (recentKeys.length > 10) recentKeys = recentKeys.slice(0, 10);
 
         // ==========================================
-        // 📊 4. 實時動態撈取大數據優選 IP
+        // 🔍 4. 去 GitHub 搵搵：動態爬取海量非官方 WARP 優選中轉 IP
         // ==========================================
-        let preferredIPList = [];
-        try {
-            const ipData = await cfGet('https://api.v2rayse.com/cf-ip');
-            if (ipData && ipData.info) {
-                const matched = ipData.info.filter(item => item.country === clientCountry);
-                preferredIPList = (matched.length > 0 ? matched : ipData.info).sort((a,b) => (a.ping || 999) - (b.ping || 999));
+        let githubIPs = [];
+        // 爬取市面上最主流的幾個每日優選大數據更新源
+        const sources = [
+            'https://raw.githubusercontent.com/banyao2000/warp-speed/main/api/ip.txt',
+            'https://raw.githubusercontent.com/fscarmen/warp/main/api/ip.txt'
+        ];
+        
+        for (const src of sources) {
+            const rawText = await httpGet(src);
+            if (rawText && rawText.length > 10) {
+                // 解析格式如 "162.159.192.1:2408" 或 "ip" 的行
+                const lines = rawText.split('\n');
+                lines.forEach(line => {
+                    const trimmed = line.trim();
+                    if (trimmed && !trimmed.startsWith('#')) {
+                        let ip = trimmed.split(':')[0];
+                        let port = trimmed.split(':')[1] || "854";
+                        if (ip && /^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) {
+                            githubIPs.push({ ip, port: parseInt(port) });
+                        }
+                    }
+                });
             }
-        } catch (e) {}
-
-        let finalIPList = [...preferredIPList];
-        let backupIndex = 0;
-        while (finalIPList.length < selectIPCount && backupIndex < backupIPs.length) {
-            const backupItem = backupIPs[backupIndex];
-            if (!finalIPList.some(item => item.ip === backupItem.ip)) {
-                finalIPList.push({ ip: backupItem.ip, country: backupItem.country, ping: 20 });
-            }
-            backupIndex++;
+            if (githubIPs.length > 0) break; 
         }
-        finalIPList = finalIPList.slice(0, selectIPCount);
+
+        // 如果 GitHub 暫時抽風，走備用高穿透 IP 段
+        if (githubIPs.length === 0) {
+            githubIPs = [
+                { ip: '162.159.192.1', port: 854 },
+                { ip: '162.159.193.5', port: 4500 },
+                { ip: '162.159.195.12', port: 854 },
+                { ip: '188.114.97.3', port: 854 }
+            ];
+        }
+
+        // 🧠 隨機洗牌洗出你要的數量，達到真正的動態高強穿透
+        let shuffled = githubIPs.sort(() => 0.5 - Math.random());
+        let finalIPList = shuffled.slice(0, selectIPCount);
 
         // ==========================================
-        // 🟢 5. 實時註冊官方 WARP 帳戶，獲取合法對應的 Public Key
+        // 💡 5. 解析 3x-ui 格式的 Reserved
         // ==========================================
-        const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
-            "key": crypto.randomBytes(32).toString('base64'), "install_id": "", "fcm_token": ""
-        });
-
-        const peerPubKey = regData.config.peers[0].public_key;
-        const clientIPv4 = regData.config.interface.addresses.v4.replace('/32', '');
-        const clientIPv6 = regData.config.interface.addresses.v6.replace('/128', '');
-        const clientID = regData.config.client_id || ""; 
-
-        // 💡 關鍵修正：解析 client_id，將其轉換為 Stash/Clash 唯一接受的十六進制切片陣列格式，徹底解決 slice 錯誤與 Timeout！
-        let hexReservedArr = ["0x00", "0x00", "0x00"];
         let sbReservedArr = [0, 0, 0];
-        if (clientID) {
+        let stashReservedStr = "[0x00, 0x00, 0x00]";
+        if (lockedReserved) {
             try {
-                const buf = Buffer.from(clientID, 'base64');
-                if (buf.length >= 3) {
-                    sbReservedArr = [buf[0], buf[1], buf[2]];
-                    hexReservedArr = [`0x${buf[0].toString(16).padStart(2,'0')}`, `0x${buf[1].toString(16).padStart(2,'0')}`, `0x${buf[2].toString(16).padStart(2,'0')}`];
+                const parts = lockedReserved.split(',').map(x => parseInt(x.trim()));
+                if (parts.length === 3 && !parts.some(isNaN)) {
+                    sbReservedArr = parts;
+                    stashReservedStr = `[${parts.map(p => `0x${p.toString(16).padStart(2,'0')}`).join(', ')}]`;
                 }
             } catch(e){}
         }
 
         // ==========================================
-        // 🍏 6. 建構符合 Stash/Clash 的真·WireGuard 完整結構
+        // 🍏 6. 建構符合 Stash/Clash 嘅真·WireGuard 完整結構（淨化 Rules + 寫入自訂 Rules）
         // ==========================================
         let stashProxiesSection = "proxies:\n";
         let proxyNames = [];
         
         finalIPList.forEach((item, index) => {
-            const ipRegion = item.country || 'CF';
-            const nodeName = `🚀 CF-WARP-[${ipRegion}]-${index+1}`;
+            const nodeName = `🚀 WARP-GitHub優選-[${index+1}]`;
             proxyNames.push(nodeName);
             
-            // 轉為真正的 WireGuard 格式，填入匹配的鑰匙，解決 Invalid public key！
             stashProxiesSection += `  - name: "${nodeName}"
     type: wireguard
     server: ${item.ip}
-    port: 500
-    ip: ${clientIPv4}
-    ipv6: ${clientIPv6}
-    public-key: ${peerPubKey}
-    private-key: ${realPrivateKey}
-    reserved: [${hexReservedArr.join(', ')}]
+    port: ${item.port}
+    ip: 172.16.0.2
+    ipv6: fd00::2
+    public-key: ${lockedPublicKey}
+    private-key: ${lockedPrivateKey}
+    reserved: ${stashReservedStr}
     udp: true
     remote-dns-resolve: true
+    fast-open: true
+    prefer-ipv4: true
     mtu: 1280\n`;
         });
 
@@ -216,32 +197,51 @@ export default async function handler(request, response) {
         });
         stashGroupSection += `      - DIRECT\n`;
 
-        // 分流路由規則
-        let stashRulesSection = `rules:
-  - GEOSITE,cn,DIRECT
-  - GEOIP,cn,DIRECT
-  - GEOIP,private,DIRECT
-  - MATCH,PROXY`;
+        // 🧠 淨化後的 Rules 路由規則（精準寫入自訂 Rules）
+        let processedCustomRules = customRulesText
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line && !line.startsWith('#'))
+            .map(line => `  - ${line}`)
+            .join('\n');
+
+        let stashRulesSection = `rules:\n`;
+        if (processedCustomRules) {
+            stashRulesSection += `${processedCustomRules}\n`;
+        }
+        stashRulesSection += `  - GEOIP,private,DIRECT\n  - MATCH,PROXY`;
 
         const fullStashYaml = `${stashProxiesSection}\n${stashGroupSection}\n${stashRulesSection}`;
 
         // ==========================================
-        // 🦊 7. 建構符合 Sing-Box 的完整 JSON 結構
+        // 🦊 7. 建構符合 Sing-Box 的完整 JSON 結構（同步寫入自訂 Rules）
         // ==========================================
         const sbOutbounds = finalIPList.map((item, index) => {
-            const ipRegion = item.country || 'CF';
             return {
                 type: "wireguard",
-                tag: `🚀 CF-WARP-[${ipRegion}]-${index+1}`,
+                tag: `🚀 WARP-GitHub優選-[${index+1}]`,
                 server: item.ip,
-                server_port: 500,
-                local_address: [ clientIPv4 + "/32", clientIPv6 + "/128" ],
-                private_key: realPrivateKey,
-                peer_public_key: peerPubKey,
+                server_port: item.port,
+                local_address: [ "172.16.0.2/32", "fd00::2/128" ],
+                private_key: lockedPrivateKey,
+                peer_public_key: lockedPublicKey,
                 reserved: sbReservedArr,
                 mtu: 1280,
                 udp_fragment: true
             };
+        });
+
+        // 簡易解析自訂 Rules 放入 Sing-box (僅作結構對齊)
+        let sbCustomRulesArr = [];
+        customRulesText.split('\n').forEach(line => {
+            const t = line.trim();
+            if (t && !t.startsWith('#')) {
+                const p = t.split(',');
+                if (p.length >= 3) {
+                    if (p[0] === 'DOMAIN-SUFFIX') sbCustomRulesArr.push({ domain_suffix: [p[1]], outbound: p[2].toLowerCase() });
+                    if (p[0] === 'DOMAIN') sbCustomRulesArr.push({ domain: [p[1]], outbound: p[2].toLowerCase() });
+                }
+            }
         });
 
         const fullSingBoxJson = {
@@ -251,14 +251,17 @@ export default async function handler(request, response) {
                 { type: "direct", tag: "direct" }
             ],
             route: {
-                rules: [ { geoip: [ "private", "cn" ], geosite: [ "cn" ], outbound: "direct" } ],
+                rules: [
+                    ...sbCustomRulesArr,
+                    { geoip: [ "private" ], outbound: "direct" }
+                ],
                 final: "PROXY",
                 auto_detect_interface: true
             }
         };
         const fullSingBoxJsonStr = JSON.stringify(fullSingBoxJson, null, 2);
 
-        // 手機 App 攔截直接請求（全自動手機更新）
+        // 手機 App 攔截直接請求
         if (isStashOrClash) {
             response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
             return response.status(200).send(fullStashYaml);
@@ -269,7 +272,7 @@ export default async function handler(request, response) {
         }
 
         // ==========================================
-        // 🌐 8. 網頁 GUI 控制台（原本詳細描述與功能完整搬回）
+        // 🌐 8. 網頁 GUI 控制台（原本詳細描述 + 新功能完整合一）
         // ==========================================
         const nextRotateCountDown = Math.max(0, Math.round((duration - (now - lastRotateTime)) / 1000));
 
@@ -286,15 +289,12 @@ export default async function handler(request, response) {
                 h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; }
                 .row { margin-bottom: 18px; }
                 label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
-                input[type="text"], input[type="number"], select { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
-                input[type="text"] { width: 100%; font-family: monospace; background: #fafafa; }
+                input[type="text"], input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+                input[type="text"], textarea { width: 100%; font-family: monospace; background: #fafafa; }
+                textarea { height: 100px; resize: vertical; }
                 .ip-input-group { display: flex; align-items: center; gap: 10px; }
                 button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
                 button.force { background: #34c759; }
-                button.unlock { background: #ff3b30; }
-                .status-tag { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; color: white; }
-                .bg-orange { background: #ff9500; }
-                .bg-green { background: #34c759; }
                 .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
                 table { width: 100%; border-collapse: collapse; margin-top: 10px; }
                 th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }
@@ -303,8 +303,7 @@ export default async function handler(request, response) {
                 .url-box { background: #f8f9fa; border: 1px dashed #007aff; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #333; word-break: break-all; margin-top: 8px; cursor: pointer; }
                 .url-box:hover { background: #f0f7ff; }
                 ol.key-list { padding-left: 0; list-style: none; margin: 0; }
-                ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; }
-                ol.key-list li.active { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; font-weight: bold; }
+                ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; }
                 summary { font-weight: bold; color: #007aff; cursor: pointer; padding: 10px 0; font-size: 16px; outline: none; user-select: none; }
                 pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; margin-top: 10px; }
             </style>
@@ -312,46 +311,60 @@ export default async function handler(request, response) {
         <body>
             <div class="container">
                 <div class="card">
-                    <h2>🌐 當前連線定位 <span><span class="ip-badge">${clientIP}</span></span></h2>
-                    <p>Vercel 動態分析你目前身處：<strong style="color:#ff3b30; font-size:18px;">${clientCountry}</strong> 區。系統會自動調度最吻合的優選 Anycast 節點。</p>
+                    <h2>🌐 網絡連線狀態：<span class="ip-badge">${clientIP} (${clientCountry})</span></h2>
+                    <p>已停用每次更新時的動態帳戶註冊，改為<strong>固定 WARP 帳戶 + 遠端動態爬取 GitHub 萬人測速優選 IP</strong> 模式！</p>
                 </div>
 
                 <div class="card" style="border: 2px solid #007aff;">
                     <h2 style="color:#007aff;">🔗 手機專用動態訂閱 URL (支援手機全自動更新)</h2>
                     <div style="margin-bottom: 15px;">
-                        <label>🍏 Stash / 🎛️ Clash 專用完整 Sub 網址：</label>
+                        <label>🍏 Stash / 🎛️ Clash 專用 Sub 網址：</label>
                         <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">${hostUrl}?type=stash</div>
                     </div>
                     <div>
-                        <label>🦊 Sing-Box 專用完整 JSON 網址：</label>
+                        <label>🦊 Sing-Box 專用 JSON 網址：</label>
                         <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=singbox');alert('已複製 Sing-Box 訂閱網址！');">${hostUrl}?type=singbox</div>
                     </div>
                 </div>
 
                 <div class="card">
-                    <h2>⚙️ 智能控制台（定時洗牌 + 優選配置）</h2>
+                    <h2>⚙️ 終極控制台（固定帳戶 + GitHub 爬取）</h2>
                     <form method="POST">
                         <input type="hidden" name="action" value="save_all">
                         
-                        <div class="row">
-                            <label>1. Safe Private Key (WireGuard Key) 鎖定框：</label>
-                            <div style="display:flex; gap:10px; align-items:center;">
-                                <input type="text" name="custom_key" value="${lockedPrivateKey}" placeholder="在此貼入固定 Key（留空走自動定時免洗模式）">
-                                ${lockedPrivateKey ? `<span class="status-tag bg-green" style="white-space:nowrap;">🔒 已鎖定</span>` : `<span class="status-tag bg-orange" style="white-space:nowrap;">🔄 免洗中</span>`}
+                        <div class="row" style="background:#f0f7ff; padding:15px; border-radius:10px;">
+                            <label style="color:#007aff;">🔑 1. 鎖定你的 3x-ui / 官方 WARP 帳戶金鑰：</label>
+                            <div style="margin-bottom:10px;">
+                                <span style="font-size:12px; color:#666;">Private Key:</span>
+                                <input type="text" name="custom_key" value="${lockedPrivateKey}">
                             </div>
+                            <div style="margin-bottom:10px;">
+                                <span style="font-size:12px; color:#666;">Public Key:</span>
+                                <input type="text" name="public_key" value="${lockedPublicKey}">
+                            </div>
+                            <div>
+                                <span style="font-size:12px; color:#666;">Reserved (例如 0,0,0 或 12,34,56):</span>
+                                <input type="text" name="reserved_val" value="${lockedReserved}">
+                            </div>
+                        </div>
+
+                        <div class="row" style="background:#fffcf0; padding:15px; border-radius:10px; border: 1px dashed #ff9500;">
+                            <label style="color:#ff9500;">✍️ 2. 自訂 Rules 路由規則輸入欄 (GEOIP,cn 已除去)：</label>
+                            <textarea name="custom_rules" placeholder="DOMAIN-SUFFIX,google.com,PROXY">${customRulesText}</textarea>
+                            <span style="font-size:11px; color:#777;">* 請遵守 Stash 標準語法，系統會自動將其置於 Rules 的最頂層優先執行。</span>
                         </div>
 
                         <div class="row" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 15px; border-radius: 10px;">
-                            <label style="color:#007aff; margin-bottom:10px;">2. ⚡ 實時 Anycast IP 路由優選設定：</label>
+                            <label style="color:#34c759;">3. ⚡ GitHub 優選 IP 撈取分發數量：</label>
                             <div class="ip-input-group">
-                                <span>針對 ${clientCountry} 導出前</span>
-                                <input type="number" name="ip_count" value="${selectIPCount}" style="width: 70px; text-align:center;" min="1" max="10">
-                                <span>個最優 IP 節點（預設值為 3）</span>
+                                <span>每次洗牌分發出</span>
+                                <input type="number" name="ip_count" value="${selectIPCount}" style="width: 70px; text-align:center;" min="1" max="20">
+                                <span>個非官方優選中轉節點</span>
                             </div>
                         </div>
 
-                        <div class="row" style="background: #f9f9f9; padding: 15px; border-radius: 10px; border-left: 4px solid #007aff;">
-                            <label style="color:#555;">3. ⏱️ 賬戶轉生週期：</label>
+                        <div class="row" style="background: #f9f9f9; padding: 15px; border-radius: 10px;">
+                            <label style="color:#555;">4. ⏱️ 遠端優選 IP 定時洗牌週期：</label>
                             每 
                             <input type="number" name="rotate_value" value="${rotateValue}" style="width: 65px; text-align:center;" min="1">
                             <select name="rotate_unit">
@@ -359,49 +372,34 @@ export default async function handler(request, response) {
                                 <option value="m" ${rotateUnit==='m'?'selected':''}>分鐘 (m)</option>
                                 <option value="h" ${rotateUnit==='h'?'selected':''}>小時 (h)</option>
                                 <option value="d" ${rotateUnit==='d'?'selected':''}>天 (d)</option>
-                                <option value="w" ${rotateUnit==='w'?'selected':''}>周 (w)</option>
-                                <option value="y" ${rotateUnit==='y'?'selected':''}>年 (y)</option>
                             </select>
-                            自動洗牌
-                            
-                            <div style="margin-top: 10px;">
-                                <input type="checkbox" id="use_force" name="use_force" value="true" ${useForceRotate?'checked':''}>
-                                <label for="use_force" style="display:inline; font-weight:normal; color:#ff3b30; cursor:pointer;">
-                                    <strong>強制覆蓋：</strong> 即使鎖定了，時間到也強行更換新密鑰！
-                                </label>
-                            </div>
+                            自動去 GitHub 重新洗牌
                         </div>
 
-                        <button type="submit">💾 儲存並發佈到雲端</button>
+                        <button type="submit">💾 儲存所有變更並發佈到雲端</button>
                     </form>
 
                     <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
                         <form method="POST" style="display:inline;">
                             <input type="hidden" name="action" value="force_now">
-                            <button type="submit" class="force">🔄 ⚡ 依家立刻強制更新洗牌</button>
+                            <button type="submit" class="force">🔄 ⚡ 依家立刻去 GitHub 爬取新 IP 進行強制洗牌</button>
                         </form>
-                        <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 僅刷新網頁測速</button>
-                        ${lockedPrivateKey ? `
-                        <form method="POST" style="display:inline; margin-left:10px;">
-                            <input type="hidden" name="action" value="unlock">
-                            <button type="submit" class="unlock">🔓 解鎖 Safe Key</button>
-                        </form>` : ''}
                     </div>
-                    <p style="font-size:12px; color:#777; margin-top:10px; margin-bottom:0;">⌛ 洗牌倒數：<strong>${nextRotateCountDown} 秒</strong></p>
+                    <p style="font-size:12px; color:#777; margin-top:10px; margin-bottom:0;">⌛ 優選洗牌倒數：<strong>${nextRotateCountDown} 秒</strong></p>
                 </div>
 
                 <div class="card">
-                    <h2>📊 當前最速 ${selectIPCount} 條 Anycast 優選 IP 數據</h2>
+                    <h2>📊 當前隨機分配出的 ${selectIPCount} 條非官方 GitHub 優選中轉 IP</h2>
                     <table>
                         <thead>
-                            <tr><th>節點順序</th><th>優選 IP</th><th>歸屬地</th></tr>
+                            <tr><th>節點順序</th><th>優選 IP</th><th>連接端口</th></tr>
                         </thead>
                         <tbody>
                             ${finalIPList.map((item, index) => `
                                 <tr>
                                     <td># ${index + 1}</td>
                                     <td class="mono" style="color:#0288d1;">${item.ip}</td>
-                                    <td><span class="mono">${item.country || 'GLOBAL'}</span></td>
+                                    <td class="mono">${item.port}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -409,12 +407,11 @@ export default async function handler(request, response) {
                 </div>
 
                 <div class="card">
-                    <h2>📋 最近十次生成的 Key 記錄歷史</h2>
+                    <h2>📋 定時洗牌更新歷史（最近 10 次事件記錄）</h2>
                     <ol class="key-list">
-                        ${recentKeys.map((k, idx) => `
-                            <li class="${k === realPrivateKey ? 'active' : ''}">
-                                <span>序列 ${idx + 1}：${k}</span>
-                                <span>${k === realPrivateKey ? '🌟 當前生效' : '📜 歷史'}</span>
+                        ${recentKeys.map((log, idx) => `
+                            <li style="${idx === 0 ? 'background:#e8f5e9; font-weight:bold; color:#1b5e20;' : ''}">
+                                ${log} ${idx === 0 ? ' 🌟 (當前生效中)' : ''}
                             </li>
                         `).join('')}
                     </ol>
@@ -436,7 +433,7 @@ export default async function handler(request, response) {
 
                 <div class="card" style="border: 1px dashed #ff9500;">
                     <details>
-                        <summary>🔽 點擊展開 / 查看已包含在訂閱內的 Rules 分流路由規則</summary>
+                        <summary>🔽 點擊展開 / 查看整合了自訂規則的單獨 Rules</summary>
                         <pre>${stashRulesSection}</pre>
                     </details>
                 </div>
