@@ -132,19 +132,27 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// Helper: 用來單獨打包生成 YAML 文本，供主路由和 AJAX 接口共用
+// 🍏 Helper: 專門用來構造符合 Stash / Clash 官方原生 WireGuard 規格的純淨 YAML
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    let reservedYamlArray = "[0, 0, 0]";
+    // 💡 核心修正：將 3x-ui 數字型 reserved 字串，轉化為 Stash 唯一能讀懂的 16進制 client-id
+    let clientIdHex = "";
     if (finalKeyObj && finalKeyObj.reserved) {
         try {
-            const cleanNums = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
-            reservedYamlArray = `[${cleanNums.join(', ')}]`;
+            const hexArr = finalKeyObj.reserved.split(',').map(num => {
+                let hex = (parseInt(num.trim()) || 0).toString(16);
+                return hex.length < 2 ? '0' + hex : hex;
+            });
+            clientIdHex = hexArr.join('');
         } catch(e) {
-            reservedYamlArray = "[0, 0, 0]";
+            clientIdHex = "000000";
         }
     }
+    if (!clientIdHex) clientIdHex = "000000";
 
-    let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
+    // 💡 修正 IP 欄位：Stash 解析器嚴格禁止帶有斜槓 CIDR（如 /32 或 /128），必須傳入純 IP 字串
+    let localIP = "172.16.0.2";
+    let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce";
+
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     
@@ -152,15 +160,16 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
+        // 💡 完美對齊對應：拋棄不支援的 reserved 欄位，精準替換成符合 GitHub 規範的 client-id 欄位
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
                                `    port: ${item.port}\n` +
-                               `    ip: 172.16.0.2/32\n` +
+                               `    ip: ${localIP}\n` +
                                `    ipv6: ${localIPv6}\n` +
                                `    public-key: "${finalKeyObj.publicKey}"\n` +
                                `    private-key: "${finalKeyObj.privateKey}"\n` +
-                               `    reserved: ${reservedYamlArray}\n` +
+                               `    client-id: "${clientIdHex}"\n` +
                                `    udp: true\n` +
                                `    mtu: 1420\n`;
     });
@@ -226,12 +235,11 @@ export default async function handler(request, response) {
             const params = new URLSearchParams(body);
             const action = params.get('action');
             
-            // 🔄 核心局部刷新優化：如果只是要立刻更換 IP 池
+            // 🔄 異步 AJAX 局部刷新：只更換 IP 池，不刷新網頁、不干擾金鑰
             if (action === 'force_rotate_now') {
                 const freshIPList = generateEdgeTunnelIPs(config.selectIPCount);
                 const freshYaml = buildStashYaml(freshIPList, finalKeyObj, config.customRulesText);
                 
-                // 直接向前端回傳純 JSON 數據，不重整網頁、不影響計時器和金鑰
                 response.setHeader('Content-Type', 'application/json');
                 return response.status(200).send(JSON.stringify({
                     success: true,
@@ -294,7 +302,6 @@ export default async function handler(request, response) {
             if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
             await saveConfig(config);
         }
-        // 換完 Key 後重新對齊對象
         if (config.currentActiveId === "latest") finalKeyObj = config.latestRegisteredObj;
     }
 
@@ -350,7 +357,7 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.2</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.3</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
                 <span style="color: #34c759;">🟢 頁面已同步更新</span>
             </div>
 
@@ -455,7 +462,7 @@ export default async function handler(request, response) {
                 document.getElementById('live-clock').innerText = now.toLocaleString('zh-HK');
             }, 1000);
 
-            // 💡 異步局部刷新邏輯：只更新 IP 表格和 YAML 預覽，不刷新網頁
+            // 異步局部刷新邏輯
             document.getElementById('btn-async-rotate').addEventListener('click', async function() {
                 const btn = this;
                 btn.disabled = true;
@@ -471,14 +478,12 @@ export default async function handler(request, response) {
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success) {
-                            // 1. 動態重組並更新 IP 列表表格
                             let tableHtml = '';
                             data.ipList.forEach((item, index) => {
                                 tableHtml += \`<tr><td># \${index + 1}</td><td class="mono" style="color:#0288d1;">\${item.ip}</td><td class="mono">\${item.port}</td></tr>\`;
                             });
                             document.getElementById('ip-table-body').innerHTML = tableHtml;
                             
-                            // 2. 動態更新下方展開的 YAML 代碼框
                             const escapedYaml = data.yaml.replace(/</g, '&lt;').replace(/>/g, '&gt;');
                             document.getElementById('yaml-preview').innerHTML = escapedYaml;
                         }
