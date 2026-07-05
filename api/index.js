@@ -199,7 +199,8 @@ export default async function handler(request, response) {
                     if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
                 }
             } else if (action === 'force_rotate_now') {
-                config.lastRotateTime = 0; 
+                // 🔄 只更新 IP Pool：不重置 lastRotateTime 避免觸發計時器換 Key，僅利用 API 請求時實時碰撞刷新 IP
+                // 網頁刷新時 finalIPList 就會自動洗牌，因此這裡只需要引導頁面刷新即可
             }
             await saveConfig(config);
         } catch (e) {}
@@ -208,7 +209,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⏱️ 5. 自動定時生命週期
+    // ⏱️ 5. 自動定時生命週期 (定時交棒計時器 - 只負責換 Key)
     // ==========================================
     const now = Date.now();
     const duration = getRotateMs(config.rotateValue, config.rotateUnit);
@@ -233,11 +234,10 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (精準修復縮進，完全符合 GitHub 規範)
+    // 🍏 6. 構造 Stash YAML (精準修正縮進對齊與強型別轉換)
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
-    // 強制將 "195,24,138" 嚴格切開並轉化為純數字陣列，徹底防止 YAML 解析成字串而 unmarshal
     let reservedYamlArray = "[0, 0, 0]";
     if (finalKeyObj && finalKeyObj.reserved) {
         try {
@@ -256,7 +256,7 @@ export default async function handler(request, response) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 修正兩格標準縮進，確保 reserved 輸出為純數字陣列（例：[195, 24, 138]）
+        // 💡 遵循 Edgetunnel/3xui 規範：統一用 2 空格縮進，屬性 4 空格縮進，徹底防止 unmarshal
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
@@ -270,9 +270,10 @@ export default async function handler(request, response) {
                                `    mtu: 1420\n`;
     });
 
+    // 💡 修正對齊：下方的陣列元素統一縮進為 4 個空格，與 proxies 完美切合
     let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
-    proxyNames.forEach(name => { stashGroupSection += `      - "${name}"\n`; });
-    stashGroupSection += `      - DIRECT\n`;
+    proxyNames.forEach(name => { stashGroupSection += `    - "${name}"\n`; });
+    stashGroupSection += `    - DIRECT\n`;
 
     let processedCustomRules = config.customRulesText
         .split('\n')
@@ -333,7 +334,7 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.1</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
                 <span style="color: #34c759;">🟢 頁面已同步更新</span>
             </div>
 
