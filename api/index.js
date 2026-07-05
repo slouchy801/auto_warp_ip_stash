@@ -237,23 +237,33 @@ export default async function handler(request, response) {
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
+    // 把資料庫的 reserved 字串例如 "195,24,138" 轉換為 YAML 陣列格式 [195, 24, 138]
+    let reservedYamlArray = "[0,0,0]";
+    if (finalKeyObj.reserved) {
+        reservedYamlArray = `[${finalKeyObj.reserved}]`;
+    }
+
+    // 如果賬戶沒有特別回傳 IPv6，採用 3x-ui 俾嘅實質分配作保底
+    let localIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
+
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     finalIPList.forEach((item, index) => {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 縮進硬修復：每一個屬性前方必須精準有且僅有 4 個空格！
+        // 💡 縮進硬修復：精準補上 reserved、修正 ip/ipv6 路由格式與 3x-ui 規格相同（MTU: 1420）
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
                                `    port: ${item.port}\n` +
-                               `    ip: 172.16.0.2\n` +
-                               `    ipv6: fd00::2\n` +
+                               `    ip: 172.16.0.2/32\n` +
+                               `    ipv6: ${localIPv6}\n` +
                                `    public-key: ${finalKeyObj.publicKey}\n` +
                                `    private-key: ${finalKeyObj.privateKey}\n` +
+                               `    reserved: ${reservedYamlArray}\n` +
                                `    udp: true\n` +
-                               `    mtu: 1280\n`;
+                               `    mtu: 1420\n`;
     });
 
     let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
