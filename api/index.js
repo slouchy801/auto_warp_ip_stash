@@ -30,7 +30,7 @@ function redisCommand(cmd, args = []) {
     });
 }
 
-// 智能全自動初始化打底
+// 智能自動初始化打底 Key
 const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
 let memoryBackup = {
     safeKey: fallbackKey,
@@ -145,7 +145,7 @@ export default async function handler(request, response) {
 
     let config = await loadConfig();
 
-    // 如果是第一次運行且 SafeKey 為空，後台直接自動註冊一條，完全不需要人手
+    // 初始化保障
     if (config.safeKey.privateKey === "請在控制台選定或自訂" || config.safeKey.privateKey === "GE0...") {
         const initAcc = await registerWarpAccount();
         if (initAcc) {
@@ -155,7 +155,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⚙️ 4. 處理控制台提交 (完全砍掉手動輸入框)
+    // ⚙️ 4. 處理控制台提交 (手動輸入與選擇合併)
     // ==========================================
     if (method === 'POST') {
         let body = '';
@@ -168,19 +168,34 @@ export default async function handler(request, response) {
             const action = params.get('action');
             
             if (action === 'save_settings') {
-                const selectedId = params.get('active_key_id') || "safe";
-                config.currentActiveId = selectedId;
-                
-                // 🧠 當點擊儲存，如果用戶想把當前選中的 Key 定義為「永久 SafeKey」
-                if (params.get('make_safe_permanent') === 'true') {
-                    if (selectedId === "latest" && config.latestRegisteredObj) {
-                        config.safeKey = config.latestRegisteredObj;
-                        config.currentActiveId = "safe";
-                    } else if (selectedId.startsWith("history_")) {
-                        const idx = parseInt(selectedId.split("_")[1]);
-                        if (config.keyHistoryPool[idx]) {
-                            config.safeKey = config.keyHistoryPool[idx];
+                // 🚀 【功能回歸】如果用戶手動輸入了 3x-ui 的 Key，優先直接覆蓋 SafeKey
+                const inputPriv = params.get('manual_private_key');
+                const inputPub = params.get('manual_public_key');
+                const inputRes = params.get('manual_reserved') || "0,0,0";
+
+                if (inputPriv && inputPub) {
+                    config.safeKey = {
+                        privateKey: inputPriv.trim(),
+                        publicKey: inputPub.trim(),
+                        reserved: inputRes.trim(),
+                        time: "人手自訂導入"
+                    };
+                    config.currentActiveId = "safe"; // 強制切換回使用 SafeKey
+                } else {
+                    // 否則，走選單模式
+                    const selectedId = params.get('active_key_id') || "safe";
+                    config.currentActiveId = selectedId;
+                    
+                    if (params.get('make_safe_permanent') === 'true') {
+                        if (selectedId === "latest" && config.latestRegisteredObj) {
+                            config.safeKey = config.latestRegisteredObj;
                             config.currentActiveId = "safe";
+                        } else if (selectedId.startsWith("history_")) {
+                            const idx = parseInt(selectedId.split("_")[1]);
+                            if (config.keyHistoryPool[idx]) {
+                                config.safeKey = config.keyHistoryPool[idx];
+                                config.currentActiveId = "safe";
+                            }
                         }
                     }
                 }
@@ -224,7 +239,7 @@ export default async function handler(request, response) {
         }
     }
 
-    // 決策金鑰
+    // 決策當前使用金鑰
     let finalKeyObj = config.safeKey;
     if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
         finalKeyObj = config.latestRegisteredObj;
@@ -238,12 +253,14 @@ export default async function handler(request, response) {
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
-    // 💡 核心修復：將 reserved 解析成 Stash 100% 認識的純整數陣列，絕不用 16 進制字串
-    let stashReservedArray = [0, 0, 0];
-    if (finalKeyObj.reserved) {
+    // 💡 100% 兼容修正：如果 reserved 是全零，直接寫入標準 16 進制 hex 字串形式，確保 Stash 絕對認得
+    let finalReservedStr = "0x00,0x00,0x00";
+    if (finalKeyObj.reserved && finalKeyObj.reserved !== "0,0,0") {
         try {
             const parts = finalKeyObj.reserved.split(',').map(x => parseInt(x.trim()));
-            if (parts.length === 3 && !parts.some(isNaN)) stashReservedArray = parts;
+            if (parts.length === 3 && !parts.some(isNaN)) {
+                finalReservedStr = parts.map(p => `0x${p.toString(16).padStart(2,'0')}`).join(',');
+            }
         } catch(e){}
     }
 
@@ -260,7 +277,7 @@ export default async function handler(request, response) {
     ipv6: fd00::2
     public-key: ${finalKeyObj.publicKey}
     private-key: ${finalKeyObj.privateKey}
-    reserved: [${stashReservedArray.join(', ')}]
+    reserved: ${finalReservedStr}
     udp: true
     remote-dns-resolve: true
     fast-open: true
@@ -292,7 +309,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🌐 7. 全新零手動控制台面版
+    // 🌐 7. 控制台網頁 GUI 面版
     // ==========================================
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
 
@@ -309,8 +326,8 @@ export default async function handler(request, response) {
             h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; }
             .row { margin-bottom: 18px; }
             label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
-            input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
-            select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
+            input[type="text"], input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+            input[type="text"], select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
             textarea { height: 90px; resize: vertical; }
             button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; }
             button.btn-reg { background: #ff9500; font-size: 16px; width: 100%; padding: 14px; border-radius: 10px; box-shadow: 0 4px 10px rgba(255,149,0,0.2); border: none; color:white; font-weight:bold; }
@@ -333,7 +350,7 @@ export default async function handler(request, response) {
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
-                <h2 style="color: white; border-bottom: 1px solid rgba(255,255,255,0.2);">⚡ 一鍵免手動金鑰生成器</h2>
+                <h2>⚡ 一鍵免手動金鑰生成器</h2>
                 <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">點擊下方按鈕，直接向 Cloudflare 申請一條全新 WARP 金鑰，並自動切換套用！</p>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
@@ -342,7 +359,7 @@ export default async function handler(request, response) {
             </div>
 
             <div class="card">
-                <h2>⚙️ 智能密鑰池管理 (零人手輸入)</h2>
+                <h2>⚙️ 智能密鑰池管理面版</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="save_settings">
                     
@@ -365,8 +382,15 @@ export default async function handler(request, response) {
                             <strong>🟢 當前 Stash 連線【鎖定套用中】金鑰詳情：</strong><br>
                             • PrivateKey: <span style="word-break:break-all;">${finalKeyObj.privateKey}</span><br>
                             • PublicKey: <span>${finalKeyObj.publicKey}</span><br>
-                            • Reserved: <span>[${stashReservedArray.join(', ')}]</span>
+                            • Reserved: <span>${finalReservedStr}</span>
                         </div>
+                    </div>
+
+                    <div class="row" style="background:#fafafa; padding:15px; border-radius:10px; border: 1px solid #ddd;">
+                        <label style="color:#555;">🛠️ 高級自訂：直接貼上你 3x-ui 運作正常的自訂 Key (不填則保持選單設定)：</label>
+                        <div style="margin-top:5px;"><span style="font-size:12px;">Private Key:</span> <input type="text" name="manual_private_key" placeholder="例如：GE0f..."></div>
+                        <div style="margin-top:5px;"><span style="font-size:12px;">Public Key:</span> <input type="text" name="manual_public_key" placeholder="例如：CFma..."></div>
+                        <div style="margin-top:5px;"><span style="font-size:12px;">Reserved (選填):</span> <input type="text" name="manual_reserved" placeholder="0,0,0"></div>
                     </div>
 
                     <div class="row" style="background:#fffcf0; padding:15px; border-radius:10px; border: 1px dashed #ff9500;">
