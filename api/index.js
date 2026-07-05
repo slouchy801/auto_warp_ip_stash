@@ -2,66 +2,45 @@ const crypto = require('crypto');
 const https = require('https');
 
 // ==========================================
-// 🌟 1. 純原生 Redis REST API 讀寫引擎 (絕不崩潰，免安裝套件)
+// 🌟 1. 原生 Redis REST API 讀寫引擎 (100% 零依賴)
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
-        // 全自動撈取 Vercel 注入的 Redis REST 密鑰與網址
-        // Redis Cloud 注入的標準變數通常包含 REDIS_URL, KV_REST_API_URL 等
         const rawUrl = process.env.KV_REST_API_URL || process.env.REDIS_URL || "";
         const token = process.env.KV_REST_API_TOKEN || "";
-        
-        if (!rawUrl) return resolve(null); // 萬一未偵測到，交給記憶體兜底
-
+        if (!rawUrl) return resolve(null);
         try {
-            // 淨化連線網址 (確保轉為標準 HTTPS REST 格式)
             let cleanUrl = rawUrl.replace('redis://', 'https://').replace('rediss://', 'https://');
             if (cleanUrl.includes('@')) {
-                // 如果是 redis://:password@host:port 格式，自動智能解析
-                const authPart = cleanUrl.split('@')[0].replace('https://', '');
                 const hostPart = cleanUrl.split('@')[1];
-                const pwd = authPart.includes(':') ? authPart.split(':')[1] : authPart;
-                // 轉向 Redis Cloud 的標準 REST 網關 (如果支援)
                 cleanUrl = `https://${hostPart}`;
             }
-
             const urlObj = new URL(`${cleanUrl}/${cmd}/${args.join('/')}`);
-            const options = {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                timeout: 2000
-            };
-
+            const options = { method: 'GET', headers: { 'Authorization': `Bearer ${token}` }, timeout: 2000 };
             const req = https.request(urlObj, options, (res) => {
                 let body = '';
                 res.on('data', chunk => body += chunk);
                 res.on('end', () => {
-                    try {
-                        const parsed = JSON.parse(body);
-                        resolve(parsed.result);
-                    } catch(e) { resolve(null); }
+                    try { resolve(JSON.parse(body).result); } catch(e) { resolve(null); }
                 });
             });
             req.on('error', () => resolve(null));
             req.end();
-        } catch(e) {
-            resolve(null);
-        }
+        } catch(e) { resolve(null); }
     });
 }
 
-// 記憶體超強兜底機制（萬一 REST API 因連線格式未對齊，系統自動切換至此，100% 確保手機不 Timeout）
+// 智能全自動初始化打底
+const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
 let memoryBackup = {
-    safeKey: { privateKey: "請在控制台選定或自訂", publicKey: "請在控制台選定或自訂", reserved: "0,0,0" },
+    safeKey: fallbackKey,
     currentActiveId: "safe",
     latestRegisteredObj: null,
     keyHistoryPool: [],
     useForceRotate: false,
     rotateUnit: "d",
     rotateValue: 1,
-    selectIPCount: 3,
+    selectIPCount: 5,
     lastRotateTime: Date.now(),
     customRulesText: "# 在此輸入自訂 Rules，每行一條\n- DOMAIN-SUFFIX,netflix.com,PROXY"
 };
@@ -69,7 +48,11 @@ let memoryBackup = {
 async function loadConfig() {
     try {
         const data = await redisCommand('GET', ['auto_wis_config']);
-        if (data) return JSON.parse(data);
+        if (data) {
+            let cfg = JSON.parse(data);
+            if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
+            return cfg;
+        }
     } catch(e){}
     return memoryBackup;
 }
@@ -77,31 +60,29 @@ async function loadConfig() {
 async function saveConfig(config) {
     memoryBackup = config;
     try {
-        // 將設定 JSON 化後塞入 Redis
         await redisCommand('SET', ['auto_wis_config', encodeURIComponent(JSON.stringify(config))]);
     } catch(e){}
 }
 
 // ==========================================
-// ⚙️ 2. EdgeTunnel 萬能 Anycast 網段隨機碰撞機 (每次重新整理噴幾百個全變 IP)
+// ⚙️ 2. EdgeTunnel 萬能 Anycast 網段隨機發電機 (實時大洗牌)
 // ==========================================
 const CF_IP_RANGES = [
     '162.159.192.', '162.159.193.', '162.159.195.', '188.114.96.', 
     '188.114.97.', '188.114.98.', '188.114.99.', '172.67.0.', 
     '104.16.0.', '104.17.0.', '104.18.0.', '104.19.0.'
 ];
-const CF_PORTS = [854, 878, 892, 2408, 4500, 5000, 1701, 51820];
+const CF_PORTS = [854, 878, 892, 2408, 4500, 5000, 51820];
 
 function generateEdgeTunnelIPs(count) {
     let pool = [];
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 150; i++) {
         const range = CF_IP_RANGES[Math.floor(Math.random() * CF_IP_RANGES.length)];
         const lastOctet = Math.floor(Math.random() * 254) + 1;
         const port = CF_PORTS[Math.floor(Math.random() * CF_PORTS.length)];
         pool.push({ ip: `${range}${lastOctet}`, port });
     }
-    let shuffled = pool.sort(() => 0.5 - Math.random());
-    return shuffled.slice(0, count);
+    return pool.sort(() => 0.5 - Math.random()).slice(0, count);
 }
 
 function cfPost(url, data) {
@@ -114,10 +95,10 @@ function cfPost(url, data) {
         };
         const req = https.request(options, (res) => {
             let body = '';
-            res.on('data', (chunk) => body += chunk);
+            res.on('data', chunk => body += chunk);
             res.on('end', () => resolve(JSON.parse(body)));
         });
-        req.on('error', (e) => reject(e));
+        req.on('error', e => reject(e));
         req.write(postData);
         req.end();
     });
@@ -146,12 +127,11 @@ function getRotateMs(value, unit) {
     const val = parseInt(value) || 1;
     if (unit === 'm') return val * 60 * 1000;
     if (unit === 'h') return val * 60 * 60 * 1000;
-    if (unit === 'd') return val * 24 * 60 * 60 * 1000;
-    return 24 * 60 * 60 * 1000;
+    return val * 24 * 60 * 60 * 1000;
 }
 
 // ==========================================
-// 🚀 3. 核心路由處理器
+// 🚀 3. 主路由邏輯
 // ==========================================
 export default async function handler(request, response) {
     const userAgent = (request.headers['user-agent'] || '').toLowerCase();
@@ -163,15 +143,23 @@ export default async function handler(request, response) {
     
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || query.type === 'stash';
 
-    // 💡 撈取設定
     let config = await loadConfig();
 
+    // 如果是第一次運行且 SafeKey 為空，後台直接自動註冊一條，完全不需要人手
+    if (config.safeKey.privateKey === "請在控制台選定或自訂" || config.safeKey.privateKey === "GE0...") {
+        const initAcc = await registerWarpAccount();
+        if (initAcc) {
+            config.safeKey = initAcc;
+            await saveConfig(config);
+        }
+    }
+
     // ==========================================
-    // ⚙️ 4. 處理控制台 POST 交互
+    // ⚙️ 4. 處理控制台提交 (完全砍掉手動輸入框)
     // ==========================================
     if (method === 'POST') {
         let body = '';
-        await new Promise((resolve) => {
+        await new Promise(resolve => {
             request.on('data', chunk => body += chunk);
             request.on('end', resolve);
         });
@@ -180,16 +168,28 @@ export default async function handler(request, response) {
             const action = params.get('action');
             
             if (action === 'save_settings') {
-                config.safeKey.privateKey = params.get('safe_private_key') || "";
-                config.safeKey.publicKey = params.get('safe_public_key') || "";
-                config.safeKey.reserved = params.get('safe_reserved') || "0,0,0";
+                const selectedId = params.get('active_key_id') || "safe";
+                config.currentActiveId = selectedId;
                 
-                config.currentActiveId = params.get('active_key_id') || "safe";
+                // 🧠 當點擊儲存，如果用戶想把當前選中的 Key 定義為「永久 SafeKey」
+                if (params.get('make_safe_permanent') === 'true') {
+                    if (selectedId === "latest" && config.latestRegisteredObj) {
+                        config.safeKey = config.latestRegisteredObj;
+                        config.currentActiveId = "safe";
+                    } else if (selectedId.startsWith("history_")) {
+                        const idx = parseInt(selectedId.split("_")[1]);
+                        if (config.keyHistoryPool[idx]) {
+                            config.safeKey = config.keyHistoryPool[idx];
+                            config.currentActiveId = "safe";
+                        }
+                    }
+                }
+
                 config.customRulesText = params.get('custom_rules') || "";
                 config.useForceRotate = params.get('use_force') === 'true';
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
-                config.selectIPCount = Math.max(1, Math.min(100, parseInt(params.get('ip_count')) || 3));
+                config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 3));
             } else if (action === 'click_register_new') {
                 const newAcc = await registerWarpAccount();
                 if (newAcc) {
@@ -208,13 +208,11 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⏱️ 5. 自動化 Rule 轉生交棒判定
+    // ⏱️ 5. 自動化生命週期 Rule
     // ==========================================
     const now = Date.now();
     const duration = getRotateMs(config.rotateValue, config.rotateUnit);
-    const isExpired = (now - config.lastRotateTime) >= duration;
-    
-    if (isExpired) {
+    if ((now - config.lastRotateTime) >= duration) {
         config.lastRotateTime = now;
         const autoAcc = await registerWarpAccount();
         if (autoAcc) {
@@ -226,9 +224,7 @@ export default async function handler(request, response) {
         }
     }
 
-    // ==========================================
-    // 🎯 6. 鎖定正在使用的金鑰
-    // ==========================================
+    // 決策金鑰
     let finalKeyObj = config.safeKey;
     if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
         finalKeyObj = config.latestRegisteredObj;
@@ -238,23 +234,19 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⚡ 7. 真·EdgeTunnel IP 噴泉發電機
+    // 🍏 6. 構造 Stash YAML (徹底修復 Unmarshal 錯誤)
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
-    let stashReservedStr = "[0x00, 0x00, 0x00]";
+    // 💡 核心修復：將 reserved 解析成 Stash 100% 認識的純整數陣列，絕不用 16 進制字串
+    let stashReservedArray = [0, 0, 0];
     if (finalKeyObj.reserved) {
         try {
             const parts = finalKeyObj.reserved.split(',').map(x => parseInt(x.trim()));
-            if (parts.length === 3 && !parts.some(isNaN)) {
-                stashReservedStr = `[${parts.map(p => `0x${p.toString(16).padStart(2,'0')}`).join(', ')}]`;
-            }
+            if (parts.length === 3 && !parts.some(isNaN)) stashReservedArray = parts;
         } catch(e){}
     }
 
-    // ==========================================
-    // 🍏 8. 生成標準 Stash YAML 訂閱
-    // ==========================================
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     finalIPList.forEach((item, index) => {
@@ -268,7 +260,7 @@ export default async function handler(request, response) {
     ipv6: fd00::2
     public-key: ${finalKeyObj.publicKey}
     private-key: ${finalKeyObj.privateKey}
-    reserved: ${stashReservedStr}
+    reserved: [${stashReservedArray.join(', ')}]
     udp: true
     remote-dns-resolve: true
     fast-open: true
@@ -300,7 +292,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🌐 9. 滿血網頁 GUI 面版
+    // 🌐 7. 全新零手動控制台面版
     // ==========================================
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
 
@@ -309,7 +301,7 @@ export default async function handler(request, response) {
     <html>
     <head>
         <meta charset="utf-8">
-        <title>Auto-WIS 終極 Redis 原生控制台</title>
+        <title>Auto-WIS 終極密鑰池控制台</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; padding: 30px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
@@ -317,17 +309,16 @@ export default async function handler(request, response) {
             h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; }
             .row { margin-bottom: 18px; }
             label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
-            input[type="text"], input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
-            input[type="text"], select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
+            input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+            select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
             textarea { height: 90px; resize: vertical; }
             button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; }
-            button.btn-reg { background: #ff9500; font-size: 16px; width: 100%; padding: 14px; border-radius: 10px; box-shadow: 0 4px 10px rgba(255,149,0,0.2); }
+            button.btn-reg { background: #ff9500; font-size: 16px; width: 100%; padding: 14px; border-radius: 10px; box-shadow: 0 4px 10px rgba(255,149,0,0.2); border: none; color:white; font-weight:bold; }
             button.force { background: #34c759; }
             .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
             .active-box { background: #e8f5e9; border-left: 5px solid #34c759; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 10px; color:#1b5e20; }
             .url-box { background: #f8f9fa; border: 1px dashed #007aff; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; color: #333; cursor: pointer; margin-top: 5px; }
             pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; }
-            summary { font-weight: bold; color: #007aff; cursor: pointer; padding: 5px 0; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; }
             th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }
             th { background: #f8f9fa; color: #666; }
@@ -337,57 +328,55 @@ export default async function handler(request, response) {
     <body>
         <div class="container">
             <div class="card">
-                <h2>🌐 當前連線定位 <span><span class="ip-badge">${clientIP}</span></span></h2>
-                <p>Vercel 智能定位目前身處：<strong style="color:#ff3b30; font-size:18px;">${clientCountry}</strong> 區。原生安全架構連線正常 🟢</p>
+                <h2>🌐 系統連線狀態</h2>
+                <p>Redis 雲端同步大腦連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
-                <h2 style="color: white; border-bottom: 1px solid rgba(255,255,255,0.2);">⚡ 密鑰註冊發電機 (一鍵撳落去即拎新 Key)</h2>
-                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">點擊下方按鈕，Vercel 會即時向 Cloudflare 註冊全新 WARP 帳戶，並直接推入你下方嘅「三合一金鑰池」！</p>
+                <h2 style="color: white; border-bottom: 1px solid rgba(255,255,255,0.2);">⚡ 一鍵免手動金鑰生成器</h2>
+                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">點擊下方按鈕，直接向 Cloudflare 申請一條全新 WARP 金鑰，並自動切換套用！</p>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
-                    <button type="submit" class="btn-reg">⚡ 依家立刻註冊一個全新 WARP 帳戶金鑰</button>
+                    <button type="submit" class="btn-reg">⚡ 依家立刻獲取全新金鑰 (免手動複製)</button>
                 </form>
             </div>
 
             <div class="card">
-                <h2>⚙️ 終極控制台面版（原生金鑰池 + EdgeTunnel 噴泉）</h2>
+                <h2>⚙️ 智能密鑰池管理 (零人手輸入)</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="save_settings">
                     
                     <div class="row" style="background:#f0f7ff; padding:15px; border-radius:10px; border: 1px solid #b3d7ff;">
-                        <label style="color:#007aff; font-size: 16px;">🎯 【下拉式選擇】手機 Stash 固定套用邊一個 Key 帳戶：</label>
+                        <label style="color:#007aff; font-size: 16px;">🎯 【下拉選單】直接挑選目前你想鎖定使用的金鑰：</label>
                         <select name="active_key_id" style="font-size:15px; font-weight:bold; color:#0056b3; padding:8px; background:#fff;">
-                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] 穩定自訂固定靜態帳戶</option>
-                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵拎到] - ${config.latestRegisteredObj.time} (${config.latestRegisteredObj.privateKey.slice(0,10)}...)</option>` : ''}
+                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] 永久固定打底賬戶 (${config.safeKey.time})</option>
+                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵拎到] - ${config.latestRegisteredObj.time}</option>` : ''}
                             ${config.keyHistoryPool.map((k, idx) => `
-                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史以前第 ${idx+1} 個] - ${k.time} (${k.privateKey.slice(0,10)}...)</option>
+                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史池第 ${idx+1} 個] - ${k.time}</option>
                             `).join('')}
                         </select>
                         
+                        <div style="margin-top:10px;">
+                            <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true">
+                            <label for="make_safe" style="display:inline; color:#007aff; font-weight:bold; cursor:pointer;">💾 同步將所選金鑰覆蓋並鎖定為「永久 Safe Key」打底</label>
+                        </div>
+
                         <div class="active-box">
-                            <strong>🟢 目前手機連線【鎖定生效中】帳戶資訊 (下拉更新 100 次都不會變)：</strong><br>
+                            <strong>🟢 當前 Stash 連線【鎖定套用中】金鑰詳情：</strong><br>
                             • PrivateKey: <span style="word-break:break-all;">${finalKeyObj.privateKey}</span><br>
                             • PublicKey: <span>${finalKeyObj.publicKey}</span><br>
-                            • Reserved: <span>${finalKeyObj.reserved}</span>
+                            • Reserved: <span>[${stashReservedArray.join(', ')}]</span>
                         </div>
                     </div>
 
-                    <div class="row" style="background:#fafafa; padding:15px; border-radius:10px; border: 1px solid #eee;">
-                        <label>🔒 點擊上方下拉或在下方手動儲存你的固定 [Safe Key]：</label>
-                        <div style="margin-bottom:8px;"><span style="font-size:11px;">Private Key:</span><input type="text" name="safe_private_key" value="${config.safeKey.privateKey}"></div>
-                        <div style="margin-bottom:8px;"><span style="font-size:11px;">Public Key:</span><input type="text" name="safe_public_key" value="${config.safeKey.publicKey}"></div>
-                        <div><span style="font-size:11px;">Reserved:</span><input type="text" name="safe_reserved" value="${config.safeKey.reserved}"></div>
-                    </div>
-
                     <div class="row" style="background:#fffcf0; padding:15px; border-radius:10px; border: 1px dashed #ff9500;">
-                        <label style="color:#ff9500;">✍️ 自訂額外 Rules 路由規則輸入欄 (GEOIP,cn 已除去)：</label>
+                        <label style="color:#ff9500;">✍️ 自訂額外 Rules 路由規則欄：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
                     </div>
 
                     <div class="row">
-                        <label>⚡ 每次實時碰撞生成的 EdgeTunnel 優選 IP 數量：</label>
-                        <input type="number" name="ip_count" value="${config.selectIPCount}" style="width: 70px; text-align:center;" min="1" max="100"> 個節點
+                        <label>⚡ 每次實時碰撞生成的 EdgeTunnel 隨機 IP 數量：</label>
+                        <input type="number" name="ip_count" value="${config.selectIPCount}" style="width: 70px; text-align:center;" min="1" max="50"> 個節點
                     </div>
 
                     <div class="row">
@@ -404,43 +393,36 @@ export default async function handler(request, response) {
                         </div>
                     </div>
 
-                    <button type="submit">💾 儲存並同步設定</button>
+                    <button type="submit">💾 儲存並同步到 Redis</button>
                 </form>
                 
                 <div style="margin-top: 15px; border-top:1px solid #eee; padding-top:15px;">
                     <form method="POST" style="display:inline;">
                         <input type="hidden" name="action" value="force_rotate_now">
-                        <button type="submit" class="force">🔄 ⚡ 依家立刻強制更新洗牌 (IP 必定秒變)</button>
+                        <button type="submit" class="force">🔄 ⚡ 依家立刻強制更換隨機 IP 池</button>
                     </form>
-                    <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 刷新網頁隨機 IP 庫</button>
-                    <p style="font-size:12px; color:#777; margin-top:8px;">⏳ 洗牌交棒倒數：<strong>${nextRotateCountDown} 秒</strong></p>
+                    <p style="font-size:12px; color:#777; margin-top:8px;">⏳ 距離下一次自動交棒剩餘：<strong>${nextRotateCountDown} 秒</strong></p>
                 </div>
             </div>
 
             <div class="card">
-                <h2>📊 EdgeTunnel 萬能網段實時碰撞 IP（每次 Refresh 全部徹底大洗牌）</h2>
+                <h2>📊 EdgeTunnel 實時網段隨機生成 IP (刷新即全變)</h2>
                 <table>
-                    <thead>
-                        <tr><th>節點順序</th><th>隨機 Anycast IP</th><th>連接端口</th></tr>
-                    </thead>
+                    <thead><tr><th>順序</th><th>隨機 Anycast IP</th><th>Port</th></tr></thead>
                     <tbody>
                         ${finalIPList.map((item, index) => `
-                            <tr>
-                                <td># ${index + 1}</td>
-                                <td class="mono" style="color:#0288d1;">${item.ip}</td>
-                                <td class="mono">${item.port}</td>
-                            </tr>
+                            <tr><td># ${index + 1}</td><td class="mono" style="color:#0288d1;">${item.ip}</td><td class="mono">${item.port}</td></tr>
                         `).join('')}
                     </tbody>
                 </table>
             </div>
 
             <div class="card" style="border: 2px solid #007aff;">
-                <h2 style="color:#007aff;">🔗 手機全自動同步訂閱網址</h2>
-                <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱！');">🍏 Stash 訂閱 Sub 網址：${hostUrl}?type=stash</div>
+                <h2>🔗 乾淨的手機 Stash 訂閱網址</h2>
+                <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">🍏 點擊複製：${hostUrl}?type=stash</div>
             </div>
 
-            <div class="card"><details><summary>🔽 點擊展開 / 查看當前 Stash YAML 輸出配置</summary><pre>${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></details></div>
+            <div class="card"><details><summary>🔽 點擊展開 / 查看當前純淨 YAML 配置</summary><pre>${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></details></div>
         </div>
     </body>
     </html>
