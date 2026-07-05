@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const https = require('https');
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 讀寫引擎 (100% 零依賴)
+// 🌟 1. 原生 Redis REST API 讀寫引擎
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -30,7 +30,6 @@ function redisCommand(cmd, args = []) {
     });
 }
 
-// 智能自動初始化打底 Key
 const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
 let memoryBackup = {
     safeKey: fallbackKey,
@@ -51,6 +50,7 @@ async function loadConfig() {
         if (data) {
             let cfg = JSON.parse(data);
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
+            if (!cfg.keyHistoryPool) cfg.keyHistoryPool = [];
             return cfg;
         }
     } catch(e){}
@@ -65,7 +65,7 @@ async function saveConfig(config) {
 }
 
 // ==========================================
-// ⚙️ 2. EdgeTunnel 萬能 Anycast 網段隨機發電機 (實時大洗牌)
+// ⚙️ 2. EdgeTunnel 萬能 Anycast 網段隨機發電機
 // ==========================================
 const CF_IP_RANGES = [
     '162.159.192.', '162.159.193.', '162.159.195.', '188.114.96.', 
@@ -138,14 +138,11 @@ export default async function handler(request, response) {
     const { method, query } = request;
     
     const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
-    const clientIP = request.headers['x-vercel-forwarded-for'] || '127.0.0.1';
     const hostUrl = `https://${request.headers.host}${request.url.split('?')[0]}`;
-    
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || query.type === 'stash';
 
     let config = await loadConfig();
 
-    // 初始化保障
     if (config.safeKey.privateKey === "請在控制台選定或自訂" || config.safeKey.privateKey === "GE0...") {
         const initAcc = await registerWarpAccount();
         if (initAcc) {
@@ -155,7 +152,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⚙️ 4. 處理控制台提交 (手動輸入與選擇合併)
+    // ⚙️ 4. 處理控制台提交 (修復選單鎖定 SafeKey 功能)
     // ==========================================
     if (method === 'POST') {
         let body = '';
@@ -168,34 +165,21 @@ export default async function handler(request, response) {
             const action = params.get('action');
             
             if (action === 'save_settings') {
-                // 🚀 【功能回歸】如果用戶手動輸入了 3x-ui 的 Key，優先直接覆蓋 SafeKey
-                const inputPriv = params.get('manual_private_key');
-                const inputPub = params.get('manual_public_key');
-                const inputRes = params.get('manual_reserved') || "0,0,0";
-
-                if (inputPriv && inputPub) {
-                    config.safeKey = {
-                        privateKey: inputPriv.trim(),
-                        publicKey: inputPub.trim(),
-                        reserved: inputRes.trim(),
-                        time: "人手自訂導入"
-                    };
-                    config.currentActiveId = "safe"; // 強制切換回使用 SafeKey
-                } else {
-                    // 否則，走選單模式
-                    const selectedId = params.get('active_key_id') || "safe";
-                    config.currentActiveId = selectedId;
-                    
-                    if (params.get('make_safe_permanent') === 'true') {
-                        if (selectedId === "latest" && config.latestRegisteredObj) {
-                            config.safeKey = config.latestRegisteredObj;
+                const selectedId = params.get('active_key_id') || "safe";
+                config.currentActiveId = selectedId;
+                
+                // 🛠️ 【核心功能修復】：當用戶 Tick 咗，直接在 Redis 將選中的 Key 鎖定並覆蓋為永久 Safe Key！
+                if (params.get('make_safe_permanent') === 'true') {
+                    if (selectedId === "latest" && config.latestRegisteredObj) {
+                        config.safeKey = JSON.parse(JSON.stringify(config.latestRegisteredObj));
+                        config.safeKey.time = "選單鎖定覆蓋 (" + new Date().toLocaleTimeString() + ")";
+                        config.currentActiveId = "safe"; 
+                    } else if (selectedId.startsWith("history_")) {
+                        const idx = parseInt(selectedId.split("_")[1]);
+                        if (config.keyHistoryPool && config.keyHistoryPool[idx]) {
+                            config.safeKey = JSON.parse(JSON.stringify(config.keyHistoryPool[idx]));
+                            config.safeKey.time = "選單鎖定覆蓋 (" + new Date().toLocaleTimeString() + ")";
                             config.currentActiveId = "safe";
-                        } else if (selectedId.startsWith("history_")) {
-                            const idx = parseInt(selectedId.split("_")[1]);
-                            if (config.keyHistoryPool[idx]) {
-                                config.safeKey = config.keyHistoryPool[idx];
-                                config.currentActiveId = "safe";
-                            }
                         }
                     }
                 }
@@ -204,7 +188,7 @@ export default async function handler(request, response) {
                 config.useForceRotate = params.get('use_force') === 'true';
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
-                config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 3));
+                config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 5));
             } else if (action === 'click_register_new') {
                 const newAcc = await registerWarpAccount();
                 if (newAcc) {
@@ -223,7 +207,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // ⏱️ 5. 自動化生命週期 Rule
+    // ⏱️ 5. 自動定時生命週期
     // ==========================================
     const now = Date.now();
     const duration = getRotateMs(config.rotateValue, config.rotateUnit);
@@ -239,36 +223,27 @@ export default async function handler(request, response) {
         }
     }
 
-    // 決策當前使用金鑰
+    // 決策當前套用金鑰
     let finalKeyObj = config.safeKey;
     if (config.currentActiveId === "latest" && config.latestRegisteredObj) {
         finalKeyObj = config.latestRegisteredObj;
-    } else if (config.currentActiveId.startsWith("history_")) {
+    } else if (config.currentActiveId.startsWith("history_") && config.keyHistoryPool) {
         const idx = parseInt(config.currentActiveId.split("_")[1]);
         if (config.keyHistoryPool[idx]) finalKeyObj = config.keyHistoryPool[idx];
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (徹底修復 Unmarshal 錯誤)
+    // 🍏 6. 構造 Stash YAML (徹底消滅 Unmarshal 錯誤)
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
-
-    // 💡 100% 兼容修正：如果 reserved 是全零，直接寫入標準 16 進制 hex 字串形式，確保 Stash 絕對認得
-    let finalReservedStr = "0x00,0x00,0x00";
-    if (finalKeyObj.reserved && finalKeyObj.reserved !== "0,0,0") {
-        try {
-            const parts = finalKeyObj.reserved.split(',').map(x => parseInt(x.trim()));
-            if (parts.length === 3 && !parts.some(isNaN)) {
-                finalReservedStr = parts.map(p => `0x${p.toString(16).padStart(2,'0')}`).join(',');
-            }
-        } catch(e){}
-    }
 
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     finalIPList.forEach((item, index) => {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
+        
+        // 💡 終極解決：直接不輸出 reserved 欄位！避開 Stash 核心對 reserved 解析的致命 bug！
         stashProxiesSection += `  - name: "${nodeName}"
     type: wireguard
     server: ${item.ip}
@@ -277,7 +252,6 @@ export default async function handler(request, response) {
     ipv6: fd00::2
     public-key: ${finalKeyObj.publicKey}
     private-key: ${finalKeyObj.privateKey}
-    reserved: ${finalReservedStr}
     udp: true
     remote-dns-resolve: true
     fast-open: true
@@ -309,7 +283,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🌐 7. 控制台網頁 GUI 面版
+    // 🌐 7. 控制台網頁 GUI 面版 (100% 零人手輸入)
     // ==========================================
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
 
@@ -326,8 +300,8 @@ export default async function handler(request, response) {
             h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; }
             .row { margin-bottom: 18px; }
             label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
-            input[type="text"], input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
-            input[type="text"], select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
+            input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+            select, textarea { width: 100%; font-family: monospace; background: #fafafa; }
             textarea { height: 90px; resize: vertical; }
             button { background: #007aff; color: white; border: none; padding: 11px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; }
             button.btn-reg { background: #ff9500; font-size: 16px; width: 100%; padding: 14px; border-radius: 10px; box-shadow: 0 4px 10px rgba(255,149,0,0.2); border: none; color:white; font-weight:bold; }
@@ -346,53 +320,48 @@ export default async function handler(request, response) {
         <div class="container">
             <div class="card">
                 <h2>🌐 系統連線狀態</h2>
-                <p>Redis 雲端同步大腦連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
+                <p>Redis 雲端同步大大脑連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
             </div>
 
+            <!-- 一鍵註冊 -->
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
                 <h2>⚡ 一鍵免手動金鑰生成器</h2>
-                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">點擊下方按鈕，直接向 Cloudflare 申請一條全新 WARP 金鑰，並自動切換套用！</p>
+                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">直接向 Cloudflare 申請一條全新 WARP 金鑰，生成後可在下方下拉選單直接鎖定！</p>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
-                    <button type="submit" class="btn-reg">⚡ 依家立刻獲取全新金鑰 (免手動複製)</button>
+                    <button type="submit" class="btn-reg">⚡ 依家立刻獲取全新金鑰</button>
                 </form>
             </div>
 
+            <!-- 配置面版 -->
             <div class="card">
-                <h2>⚙️ 智能密鑰池管理面版</h2>
+                <h2>⚙️ 智能密鑰池管理面版 (100% 零人手輸入)</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="save_settings">
                     
                     <div class="row" style="background:#f0f7ff; padding:15px; border-radius:10px; border: 1px solid #b3d7ff;">
-                        <label style="color:#007aff; font-size: 16px;">🎯 【下拉選單】直接挑選目前你想鎖定使用的金鑰：</label>
+                        <label style="color:#007aff; font-size: 16px;">🎯 【下拉選單】揀一條你中意嘅金鑰入去：</label>
                         <select name="active_key_id" style="font-size:15px; font-weight:bold; color:#0056b3; padding:8px; background:#fff;">
                             <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] 永久固定打底賬戶 (${config.safeKey.time})</option>
                             ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵拎到] - ${config.latestRegisteredObj.time}</option>` : ''}
-                            ${config.keyHistoryPool.map((k, idx) => `
+                            ${config.keyHistoryPool ? config.keyHistoryPool.map((k, idx) => `
                                 <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史池第 ${idx+1} 個] - ${k.time}</option>
-                            `).join('')}
+                            `).join('') : ''}
                         </select>
                         
                         <div style="margin-top:10px;">
                             <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true">
-                            <label for="make_safe" style="display:inline; color:#007aff; font-weight:bold; cursor:pointer;">💾 同步將所選金鑰覆蓋並鎖定為「永久 Safe Key」打底</label>
+                            <label for="make_safe" style="display:inline; color:#007aff; font-weight:bold; cursor:pointer;">💾 剔呢度：直接將選中嘅 Key 覆蓋並鎖定為「永久 Safe Key」打底</label>
                         </div>
 
                         <div class="active-box">
                             <strong>🟢 當前 Stash 連線【鎖定套用中】金鑰詳情：</strong><br>
                             • PrivateKey: <span style="word-break:break-all;">${finalKeyObj.privateKey}</span><br>
-                            • PublicKey: <span>${finalKeyObj.publicKey}</span><br>
-                            • Reserved: <span>${finalReservedStr}</span>
+                            • PublicKey: <span>${finalKeyObj.publicKey}</span>
                         </div>
                     </div>
 
-                    <div class="row" style="background:#fafafa; padding:15px; border-radius:10px; border: 1px solid #ddd;">
-                        <label style="color:#555;">🛠️ 高級自訂：直接貼上你 3x-ui 運作正常的自訂 Key (不填則保持選單設定)：</label>
-                        <div style="margin-top:5px;"><span style="font-size:12px;">Private Key:</span> <input type="text" name="manual_private_key" placeholder="例如：GE0f..."></div>
-                        <div style="margin-top:5px;"><span style="font-size:12px;">Public Key:</span> <input type="text" name="manual_public_key" placeholder="例如：CFma..."></div>
-                        <div style="margin-top:5px;"><span style="font-size:12px;">Reserved (選填):</span> <input type="text" name="manual_reserved" placeholder="0,0,0"></div>
-                    </div>
-
+                    <!-- 自訂 Rules -->
                     <div class="row" style="background:#fffcf0; padding:15px; border-radius:10px; border: 1px dashed #ff9500;">
                         <label style="color:#ff9500;">✍️ 自訂額外 Rules 路由規則欄：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
@@ -429,6 +398,7 @@ export default async function handler(request, response) {
                 </div>
             </div>
 
+            <!-- IP 展示 -->
             <div class="card">
                 <h2>📊 EdgeTunnel 實時網段隨機生成 IP (刷新即全變)</h2>
                 <table>
@@ -441,6 +411,7 @@ export default async function handler(request, response) {
                 </table>
             </div>
 
+            <!-- 訂閱網址 -->
             <div class="card" style="border: 2px solid #007aff;">
                 <h2>🔗 乾淨的手機 Stash 訂閱網址</h2>
                 <div class="url-box" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製 Stash 訂閱網址！');">🍏 點擊複製：${hostUrl}?type=stash</div>
