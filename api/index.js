@@ -1,47 +1,50 @@
-const fetch = require('node-fetch');
 const crypto = require('crypto');
+const https = require('https');
 
-// 喺 Node.js 本地生成符合 WireGuard 的隨機 Private Key
-function genWireGuardPrivateKey() {
-    const buf = crypto.randomBytes(32);
-    return buf.toString('base64');
+// 仿照 3x-ui 發送 POST 請求給 Cloudflare
+function cfPost(url, data) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const postData = JSON.stringify(data);
+        const options = {
+            hostname: u.hostname, path: u.pathname, method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'okhttp/3.12.1', // 3x-ui 模擬的安卓官方客戶端 Header
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        };
+        const req = https.request(options, (res) => {
+            let body = '';
+            res.on('data', (chunk) => body += chunk);
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) resolve(JSON.parse(body));
+                else reject(new Error(`CF 拒絕: ${res.statusCode}`));
+            });
+        });
+        req.on('error', (e) => reject(e));
+        req.write(postData);
+        req.end();
+    });
 }
 
 export default async function handler(request, response) {
     try {
-        // Vercel 自動提供訪客的手機 IP 所在地 (例如 "HK")
-        const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
-        const clientIP = request.headers['x-vercel-forwarded-for'] || '未知 IP';
+        // 1. 【3x-ui 核心邏輯一】：在本地憑空生成 WireGuard 必備的私鑰
+        const realPrivateKey = crypto.randomBytes(32).toString('base64');
 
-        // ==========================================
-        // 第一步：真正的「自動向 CF 註冊 WARP 帳戶」
-        // 喺 Vercel (AWS) 環境發出，100% 避開 1015！
-        // ==========================================
-        const regUrl = 'https://api.cloudflareclient.com/v0a/reg';
-        const regResponse = await fetch(regUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'okhttp/3.12.1'
-            },
-            body: JSON.stringify({
-                "key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", // 官方公共密鑰
-                "install_id": "",
-                "fcm_token": ""
-            })
+        // 2. 【3x-ui 核心邏輯二】：打去 CF 官方接口註冊，拿取內網 IP 與 client_id
+        const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
+            "key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", // 官方公共密鑰
+            "install_id": "", "fcm_token": ""
         });
 
-        if (!regResponse.ok) {
-            throw new Error(`CF 註冊失敗，狀態碼: ${regResponse.status}`);
-        }
-
-        const regData = await regResponse.json();
-        
         const peerPubKey = regData.config.peers[0].public_key;
         const clientIPv4 = regData.config.interface.addresses.v4.replace('/32', '');
         const clientIPv6 = regData.config.interface.addresses.v6.replace('/128', '');
         const clientID = regData.config.client_id || ""; 
-        
+
+        // 3. 【3x-ui 核心邏輯三】：把 client_id 轉化為 3 位元組的 reserved 陣列
         let reserved = "[0,0,0]";
         if (clientID) {
             try {
@@ -52,35 +55,18 @@ export default async function handler(request, response) {
             } catch(e){}
         }
 
-        // ==========================================
-        // 第二步：動態獲取優選 IP
-        // ==========================================
-        const ipResponse = await fetch('https://api.v2rayse.com/cf-ip');
-        const ipData = await ipResponse.json();
-        let bestIP = '162.159.192.1'; 
-
-        if (ipData && ipData.info) {
-            const matched = ipData.info.filter(item => item.country === clientCountry);
-            if (matched.length > 0) {
-                bestIP = matched[0].ip;
-            }
-        }
-
-        // ==========================================
-        // 第三步：組合並直出 Stash 格式
-        // ==========================================
-        const realPrivateKey = genWireGuardPrivateKey();
-
-        const stashYaml = `# ==========================================
-# ⚡ WARP Vercel 雲端全自動自產優選配置
-# 🌐 當前手機 IP: ${clientIP}
-# 📍 手機定位地區: ${clientCountry}
-# ==========================================
+        // 4. 打包成手機 Stash 認得的代理格式
+        const stashYaml = `# =========================================================
+# ⚙️ [3X-UI WARP FUNCTION EXTRACT]
+# Private Key: ${realPrivateKey}
+# Peer Public Key: ${peerPubKey}
+# Generated Reserved: ${reserved}
+# =========================================================
 
 proxies:
-  - name: "🚀 CF-WARP-Vercel優選-${clientCountry}"
+  - name: "🚀 CF-WARP-Vercel"
     type: wireguard
-    server: ${bestIP}
+    server: 162.159.192.1
     port: 2408
     ip: ${clientIPv4}
     ipv6: ${clientIPv6}
@@ -92,12 +78,11 @@ proxies:
     mtu: 1280
 `;
 
-        // 設置回傳 Header，讓 Stash 可以直接識別並導入
+        // 告訴 Vercel 輸出純文字，不要下載
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
-        response.setHeader('Content-Disposition', 'inline; filename="warp_stash.yaml"');
-        return response.status(200).send(stashYaml);
+        response.status(200).send(stashYaml);
 
     } catch (error) {
-        return response.status(500).send(`❌ 部署出錯：${error.message}`);
+        response.status(500).send(`核心出錯: ${error.message}`);
     }
 }
