@@ -12,7 +12,6 @@ let rotateUnit = "d";
 let rotateValue = 1;  
 let selectIPCount = 1; 
 
-// 官方經典 Anycast IP 備用池
 const backupIPs = [
     { ip: '162.159.192.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
     { ip: '162.159.193.1', country: 'GLOBAL', isp: 'Cloudflare Anycast' },
@@ -128,12 +127,10 @@ export default async function handler(request, response) {
 
         if (recentKeys.length > 10) recentKeys = recentKeys.slice(0, 10);
 
-        // 2. 優選 IP 撈取與動態補齊機制
         let preferredIPList = [];
         try {
             const ipData = await cfGet('https://api.v2rayse.com/cf-ip');
             if (ipData && ipData.info) {
-                // 優先撈遊客當地（例如 HK），無符合就撈全池
                 const matched = ipData.info.filter(item => item.country === clientCountry);
                 preferredIPList = (matched.length > 0 ? matched : ipData.info).sort((a,b) => (a.ping || 999) - (b.ping || 999));
             }
@@ -150,7 +147,6 @@ export default async function handler(request, response) {
         }
         finalIPList = finalIPList.slice(0, selectIPCount);
 
-        // 3. 打去 CF 註冊帳戶
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": crypto.randomBytes(32).toString('base64'), "install_id": "", "fcm_token": ""
         });
@@ -170,7 +166,6 @@ export default async function handler(request, response) {
             } catch(e){}
         }
 
-        // 4. 生成多節點 YAML（節點名加上 IP 地區代碼）
         let proxyNodesYaml = '';
         finalIPList.forEach((item, index) => {
             const ipRegion = item.country || 'CF';
@@ -242,7 +237,10 @@ ${proxyNodesYaml}`;
                 ol.key-list li { padding: 8px 12px; background: #fafafa; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; }
                 ol.key-list li.active { background: #e8f5e9; border-color: #a5d6a7; color: #1b5e20; font-weight: bold; }
                 
-                pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; }
+                /* 摺疊抽屜精美設定 */
+                summary { font-weight: bold; color: #007aff; cursor: pointer; padding: 10px 0; font-size: 16px; outline: none; user-select: none; }
+                summary:hover { color: #0063cc; }
+                pre { background: #1e1e1e; color: #4af626; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; margin-top: 10px; }
             </style>
         </head>
         <body>
@@ -307,7 +305,7 @@ ${proxyNodesYaml}`;
                         <button onclick="window.location.reload();" style="background:#6c757d; margin-left:10px;">🔄 僅刷新網頁測速</button>
                         ${lockedPrivateKey ? `
                         <form method="POST" style="display:inline; margin-left:10px;">
-                            <input type="hidden" name="action" value="unlock">
+                            <input type="hidden" name="unlock">
                             <button type="submit" class="unlock">🔓 解鎖 Safe Key</button>
                         </form>` : ''}
                     </div>
@@ -357,8 +355,10 @@ ${proxyNodesYaml}`;
                 </div>
 
                 <div class="card">
-                    <h2>📱 最終 Stash YAML 輸出 (已智能過濾網頁)</h2>
-                    <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                    <details>
+                        <summary>🔽 點擊展開 / 收起最終 Stash YAML 輸出原始碼</summary>
+                        <pre>${stashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                    </details>
                 </div>
             </div>
         </body>
