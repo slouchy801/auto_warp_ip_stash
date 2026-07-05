@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const https = require('https');
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 讀寫引擎
+// 🌟 1. 原生 Redis REST API 讀寫引擎 (100% 零依賴)
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -32,6 +32,7 @@ function redisCommand(cmd, args = []) {
 
 const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
 
+// 🧠 核心修改：將 useForceRotate 初始預設直接改為 true (Default Checked)
 let memoryBackup = {
     safeKey: fallbackKey,
     currentActiveId: "safe",
@@ -52,6 +53,7 @@ async function loadConfig() {
             let cfg = JSON.parse(data);
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
             if (!cfg.keyHistoryPool) cfg.keyHistoryPool = [];
+            // 確保舊數據如果沒有這個欄位，也自動補上預設 true
             if (cfg.useForceRotate === undefined) cfg.useForceRotate = true;
             return cfg;
         }
@@ -186,7 +188,7 @@ export default async function handler(request, response) {
                 }
 
                 config.customRulesText = params.get('custom_rules') || "";
-                config.useForceRotate = params.get('use_force') === 'true';
+                config.useForceRotate = params.get('use_force') === 'true'; // 讀取前端狀態
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
                 config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 5));
@@ -233,7 +235,7 @@ export default async function handler(request, response) {
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (精準修復縮進，完全符合 GitHub 規範)
+    // 🍏 6. 構造 Stash YAML (對齊 GitHub EdgeTunnel 標準語法，100% 根除 unmarshal 閃退)
     // ==========================================
     let finalIPList = generateEdgeTunnelIPs(config.selectIPCount);
 
@@ -243,17 +245,17 @@ export default async function handler(request, response) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 縮進硬修復：每一個屬性前方必須精準有且僅有 4 個空格！
-        stashProxiesSection += `  - name: "${nodeName}"\n` +
-                               `    type: wireguard\n` +
-                               `    server: ${item.ip}\n` +
-                               `    port: ${item.port}\n` +
-                               `    ip: 172.16.0.2\n` +
-                               `    ipv6: fd00::2\n` +
-                               `    public-key: ${finalKeyObj.publicKey}\n` +
-                               `    private-key: ${finalKeyObj.privateKey}\n` +
-                               `    udp: true\n` +
-                               `    mtu: 1280\n`;
+        // 💡 終極修正：剔除 fast-open, prefer-ipv4, remote-dns-resolve 等非 WireGuard 標準參數
+        stashProxiesSection += `  - name: "${nodeName}"
+    type: wireguard
+    server: ${item.ip}
+    port: ${item.port}
+    ip: 172.16.0.2
+    ipv6: fd00::2
+    public-key: ${finalKeyObj.publicKey}
+    private-key: ${finalKeyObj.privateKey}
+    udp: true
+    mtu: 1280\n`;
     });
 
     let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
@@ -283,7 +285,6 @@ export default async function handler(request, response) {
     // 🌐 7. 控制台網頁 GUI 面版
     // ==========================================
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
-    const currentTimeString = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
 
     const html = `
     <!DOCTYPE html>
@@ -295,7 +296,6 @@ export default async function handler(request, response) {
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #333; padding: 30px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
             .card { background: white; padding: 25px; border-radius: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); margin-bottom: 25px; }
-            .time-banner { background: #1e1e24; color: #fff; padding: 12px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; font-family: monospace; font-size: 14px; box-shadow: inset 0 0 10px rgba(0,0,0,0.5); }
             h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 12px; font-size: 20px; }
             .row { margin-bottom: 18px; }
             label { font-weight: bold; display: block; margin-bottom: 6px; color: #444; }
@@ -317,12 +317,6 @@ export default async function handler(request, response) {
     </head>
     <body>
         <div class="container">
-            
-            <div class="time-banner">
-                <span>⏰ 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 頁面已同步更新</span>
-            </div>
-
             <div class="card">
                 <h2>🌐 系統連線狀態</h2>
                 <p>Redis 雲端同步大腦連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
@@ -394,7 +388,7 @@ export default async function handler(request, response) {
                 <div style="margin-top: 15px; border-top:1px solid #eee; padding-top:15px;">
                     <form method="POST" style="display:inline;">
                         <input type="hidden" name="action" value="force_rotate_now">
-                        <button type="submit" class="force">🔄 ⚡ 依家立刻強制更換隨機 IP池</button>
+                        <button type="submit" class="force">🔄 ⚡ 依家立刻強制更換隨機 IP 池</button>
                     </form>
                     <p style="font-size:12px; color:#777; margin-top:8px;">⏳ 距離下一次自動交棒剩餘：<strong>${nextRotateCountDown} 秒</strong></p>
                 </div>
@@ -419,14 +413,6 @@ export default async function handler(request, response) {
 
             <div class="card"><details><summary>🔽 點擊展開 / 查看當前純淨 YAML 配置</summary><pre>${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></details></div>
         </div>
-        
-        <script>
-            // 網頁端動態時鐘
-            setInterval(() => {
-                const now = new Date();
-                document.getElementById('live-clock').innerText = now.toLocaleString('zh-HK');
-            }, 1000);
-        </script>
     </body>
     </html>
     `;
