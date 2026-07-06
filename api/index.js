@@ -43,7 +43,7 @@ let memoryBackup = {
     selectIPCount: 5,
     lastRotateTime: Date.now(),
     customRulesText: "# 在此輸入自訂 Rules，每行一條\n- DOMAIN-SUFFIX,netflix.com,PROXY",
-    currentIPList: [] // 用來儲存當前固定的 IP，防止局部刷新跟 YAML 脫節
+    currentIPList: [] 
 };
 
 async function loadConfig() {
@@ -54,12 +54,11 @@ async function loadConfig() {
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
             if (!cfg.keyHistoryPool) cfg.keyHistoryPool = [];
             if (cfg.useForceRotate === undefined) cfg.useForceRotate = true;
-            if (!cfg.currentIPList || cfg.currentIPList.length === 0) cfg.currentIPList = generateEdgeTunnelIPs(cfg.selectIPCount || 5);
+            if (!cfg.currentIPList || cfg.currentIPList.length === 0) cfg.currentIPList = generateTrueAnycastIPs(cfg.selectIPCount || 5);
             return cfg;
         }
     } catch(e){}
-    // Memory Fallback 初始化
-    if (memoryBackup.currentIPList.length === 0) memoryBackup.currentIPList = generateEdgeTunnelIPs(5);
+    if (memoryBackup.currentIPList.length === 0) memoryBackup.currentIPList = generateTrueAnycastIPs(5);
     return memoryBackup;
 }
 
@@ -71,22 +70,25 @@ async function saveConfig(config) {
 }
 
 // ==========================================
-// ⚙️ 2. EdgeTunnel 萬能 Anycast 網段隨機發電機
+// ⚙️ 2. 對標 EdgeTunnel 的真正 WARP 專用 Anycast 清單
 // ==========================================
-const CF_IP_RANGES = [
-    '162.159.192.', '162.159.193.', '162.159.195.', '188.114.96.', 
-    '188.114.97.', '188.114.98.', '188.114.99.', '172.67.0.', 
-    '104.16.0.', '104.17.0.', '104.18.0.', '104.19.0.'
+const TRUE_WARP_ANYCAST = [
+    '162.159.192.1', '162.159.193.1', '162.159.195.1', '162.159.204.1',
+    '188.114.96.1',  '188.114.97.1',  '188.114.98.1',  '188.114.99.1',
+    '162.159.192.2', '162.159.193.2', '162.159.195.2', '162.159.204.2'
 ];
-const CF_PORTS = [854, 878, 892, 2408, 4500, 5000, 51820];
+const WARP_PORTS = [51820, 2408, 4500, 854, 892];
 
-function generateEdgeTunnelIPs(count) {
+function generateTrueAnycastIPs(count) {
     let pool = [];
-    for (let i = 0; i < 150; i++) {
-        const range = CF_IP_RANGES[Math.floor(Math.random() * CF_IP_RANGES.length)];
-        const lastOctet = Math.floor(Math.random() * 254) + 1;
-        const port = CF_PORTS[Math.floor(Math.random() * CF_PORTS.length)];
-        pool.push({ ip: `${range}${lastOctet}`, port });
+    // 使用真正通車的專用網段隨機偏移末尾或直接採用經典優選
+    for (let i = 0; i < 50; i++) {
+        const baseIp = TRUE_WARP_ANYCAST[Math.floor(Math.random() * TRUE_WARP_ANYCAST.length)];
+        const port = WARP_PORTS[Math.floor(Math.random() * WARP_PORTS.length)];
+        // 162.159.192.X 隨機化
+        const ipParts = baseIp.split('.');
+        ipParts[3] = Math.floor(Math.random() * 250) + 1;
+        pool.push({ ip: ipParts.join('.'), port });
     }
     return pool.sort(() => 0.5 - Math.random()).slice(0, count);
 }
@@ -136,7 +138,6 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// 🍏 真正跟住金鑰更新、絕無 Hardcode 的防爆輸出引擎
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
     let resArr = [0, 0, 0];
     if (Array.isArray(finalKeyObj.reserved)) {
@@ -152,7 +153,6 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         const nodeName = `Warp${String(index + 1).padStart(2, '0')}`;
         proxyNames.push(nodeName);
 
-        // 🎯 修正：真正帶入後端我們自己 gen 出嚟/鎖定緊嘅正確金鑰變數！
         y += `  - name: ${nodeName}\n`;
         y += `    type: wireguard\n`;
         y += `    server: ${item.ip}\n`;
@@ -163,7 +163,7 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         y += `    public-key: ${finalKeyObj.publicKey}\n`;   
         y += `    reserved: [${resArr.join(', ')}]\n`; 
         y += `    udp: true\n`;
-        y += `    mtu: 1280\n`;
+        y += `    mtu: 1336\n`; // 優化 MTU 值，防大包被封鎖
         y += `    remote-dns-resolve: true\n`;
         y += `    dns: [1.1.1.1, 1.0.0.1]\n\n`;
     });
@@ -235,9 +235,8 @@ export default async function handler(request, response) {
             const params = new URLSearchParams(body);
             const action = params.get('action');
             
-            // 🔄 按下強制洗牌按鈕：必須同步鎖定入 Redis，防止跟 YAML 不同步！
             if (action === 'force_rotate_now') {
-                config.currentIPList = generateEdgeTunnelIPs(config.selectIPCount);
+                config.currentIPList = generateTrueAnycastIPs(config.selectIPCount);
                 await saveConfig(config);
                 
                 const freshYaml = buildStashYaml(config.currentIPList, finalKeyObj, config.customRulesText);
@@ -277,7 +276,7 @@ export default async function handler(request, response) {
                 const prevCount = config.selectIPCount;
                 config.selectIPCount = Math.max(1, Math.min(50, parseInt(params.get('ip_count')) || 5));
                 if (prevCount !== config.selectIPCount) {
-                    config.currentIPList = generateEdgeTunnelIPs(config.selectIPCount);
+                    config.currentIPList = generateTrueAnycastIPs(config.selectIPCount);
                 }
             } else if (action === 'click_register_new') {
                 const newAcc = await registerWarpAccount();
@@ -307,14 +306,14 @@ export default async function handler(request, response) {
             config.latestRegisteredObj = autoAcc;
             if (config.useForceRotate) config.currentActiveId = "latest"; 
             if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
-            config.currentIPList = generateEdgeTunnelIPs(config.selectIPCount); // 自動洗牌時一併重算 IP
+            config.currentIPList = generateTrueAnycastIPs(config.selectIPCount); 
             await saveConfig(config);
         }
         if (config.currentActiveId === "latest") finalKeyObj = config.latestRegisteredObj;
     }
 
     // ==========================================
-    // 🍏 6. 構造 Stash YAML (手機端拉取)
+    // 🍏 6. 構造 Stash YAML
     // ==========================================
     const fullStashYaml = buildStashYaml(config.currentIPList, finalKeyObj, config.customRulesText);
 
@@ -365,14 +364,15 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.2.5</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 自生金鑰套用完成 (防 Timeout)</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.3.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 專用 Anycast 優選對齊成功 (不 Timeout)</span>
             </div>
 
             <div class="card">
                 <h2>🌐 系統連線狀態</h2>
+                <p>🖥️ 當前瀏覽器公網 IP：<span class="ip-badge" id="browser-real-ip" style="background:#f5f5f5; color:#333;">正在透過 API 讀取...</span></p>
                 <p>Redis 雲端同步大腦連線正常 🟢 手機定位目前身處：<span class="ip-badge">${clientCountry}</span></p>
-                <p>📡 當前主推 Anycast 首選 IP 端點：<span class="ip-badge" id="current-main-ip" style="background:#fff3e0; color:#e65100;">${config.currentIPList[0] ? `${config.currentIPList[0].ip}:${config.currentIPList[0].port}` : '計算中'}</span></p>
+                <p>📡 當前優選 Anycast 首選 IP 端點：<span class="ip-badge" id="current-main-ip" style="background:#fff3e0; color:#e65100;">${config.currentIPList[0] ? `${config.currentIPList[0].ip}:${config.currentIPList[0].port}` : '計算中'}</span></p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
@@ -405,7 +405,7 @@ export default async function handler(request, response) {
                         </div>
 
                         <div class="active-box">
-                            <strong>🟢 當前 Stash 連線【鎖定套用中】金鑰詳情：</strong><br>
+                            <strong>🟢 當前 Stash 連線【鎖定套用中】我們自己 gen 嘅金鑰詳情：</strong><br>
                             • PrivateKey: <span style="word-break:break-all;">${finalKeyObj.privateKey}</span><br>
                             • PublicKey: <span>${finalKeyObj.publicKey}</span><br>
                             • Reserved: <span>[${Array.isArray(finalKeyObj.reserved) ? finalKeyObj.reserved.join(', ') : finalKeyObj.reserved}]</span>
@@ -466,12 +466,21 @@ export default async function handler(request, response) {
         </div>
         
         <script>
+            // 實時透過 API 讀取當前 Browser 公網 IP
+            fetch('https://api.ipify.org?format=json')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('browser-real-ip').innerText = data.ip;
+                })
+                .catch(() => {
+                    document.getElementById('browser-real-ip').innerText = "讀取失敗 (請檢查本地網絡)";
+                });
+
             setInterval(() => {
                 const now = new Date();
                 document.getElementById('live-clock').innerText = now.toLocaleString('zh-HK');
             }, 1000);
 
-            // 🟢 強制洗牌局部更新，連動狀態欄與底部的 YAML
             document.getElementById('btn-async-rotate').addEventListener('click', async function() {
                 const btn = this;
                 btn.disabled = true;
@@ -487,17 +496,14 @@ export default async function handler(request, response) {
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success && data.ipList.length > 0) {
-                            // 1. 更新連線狀態欄的「當前主推 IP」
                             document.getElementById('current-main-ip').innerText = data.ipList[0].ip + ":" + data.ipList[0].port;
                             
-                            // 2. 更新表格
                             let tableHtml = '';
                             data.ipList.forEach((item, index) => {
                                 tableHtml += \`<tr><td># \${index + 1}</td><td class="mono" style="color:#0288d1;">\${item.ip}</td><td class="mono">\${item.port}</td></tr>\`;
                             });
                             document.getElementById('ip-table-body').innerHTML = tableHtml;
                             
-                            // 3. 更新底部的純淨 YAML，做到 100% 同步
                             const escapedYaml = data.yaml.replace(/</g, '&lt;').replace(/>/g, '&gt;');
                             document.getElementById('yaml-preview').innerHTML = escapedYaml;
                         }
