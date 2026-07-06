@@ -134,24 +134,24 @@ function getRotateMs(value, unit) {
 
 // 🍏 核心重寫：完美遵循 Stash 官方原生 WireGuard 解析架構
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    // 💡 修正 1：將 [0,0,0] 轉化為 Stash 唯一的 16 進制 client-id 字串
-    let clientIdHex = "";
+    // 💡 修正 1：將 [0,0,0] 還原為 Stash / Clash 官方唯一認可的標準 [x, y, z] 整數陣列型態
+    let reservedArrayString = "[0, 0, 0]";
     if (finalKeyObj && finalKeyObj.reserved) {
         try {
-            const hexArr = finalKeyObj.reserved.split(',').map(num => {
-                let hex = (parseInt(num.trim()) || 0).toString(16);
-                return hex.length < 2 ? '0' + hex : hex;
-            });
-            clientIdHex = hexArr.join('');
+            const parts = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
+            if (parts.length === 3) {
+                reservedArrayString = `[${parts.join(', ')}]`;
+            }
         } catch(e) {
-            clientIdHex = "000000";
+            reservedArrayString = "[0, 0, 0]";
         }
     }
-    if (!clientIdHex) clientIdHex = "000000";
 
-    // 💡 修正 2【致命崩潰點】：Stash 要求 IPv4 和 IPv6 必須合體成一個逗號字串傳入 `ip:` 欄位，且絕對不能有 /32
-    let stashCombinedIP = "172.16.0.2, 2606:4700:110:860a:defb:f7c2:ef4f:9bce";
+    // 💡 修正 2【致命崩潰點】：Stash 要求必須帶有 /32 和 /128 網段，否則 net.ParseCIDR 必定 Unmarshal 失敗
+    let stashIPv4 = "172.16.0.2/32";
+    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
 
+    // 💡 修正 3：嚴格遵守 YAML 雙空格標準縮排，修正欄位名稱，確保客戶端順利解析
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     
@@ -159,15 +159,15 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
-        // 💡 修正 3：嚴格遵守雙引號包裹字串型態，完全抹除 `reserved:` 欄位避免 unmarshal 失敗
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
-                               `    server: ${item.ip}\n` +
+                               `    server: "${item.ip}"\n` +
                                `    port: ${item.port}\n` +
-                               `    ip: "${stashCombinedIP}"\n` +
+                               `    ip: "${stashIPv4}"\n` +
+                               `    ipv6: "${stashIPv6}"\n` +
                                `    public-key: "${finalKeyObj.publicKey}"\n` +
                                `    private-key: "${finalKeyObj.privateKey}"\n` +
-                               `    client-id: "${clientIdHex}"\n` +
+                               `    reserved: ${reservedArrayString}\n` +
                                `    udp: true\n` +
                                `    mtu: 1420\n`;
     });
@@ -311,6 +311,7 @@ export default async function handler(request, response) {
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        response.setHeader('profile-update-interval', '24'); // 提示 Stash 24小時自動靜態更新
         return response.status(200).send(fullStashYaml);
     }
 
@@ -354,8 +355,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.5</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 規格已完美修正</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.6</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 Stash 規格已完美修正</span>
             </div>
 
             <div class="card">
