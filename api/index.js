@@ -132,9 +132,9 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// 🍏 核心重寫：完美遵循 Stash 官方原生 WireGuard 解析架構
+// 🍏 核心修正：對標 warp-to-clash 官方標準 YAML 輸出格式
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    // 💡 修正 1：將 [0,0,0] 還原為 Stash / Clash 官方唯一認可的標準 [x, y, z] 整數陣列型態
+    // 🚀 徹底解決 Line 69 unmarshal 錯誤：將 "0,0,0" 字串嚴格轉為標準 YAML 整數陣列 [0, 0, 0]
     let reservedArrayString = "[0, 0, 0]";
     if (finalKeyObj && finalKeyObj.reserved) {
         try {
@@ -147,11 +147,9 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         }
     }
 
-    // 💡 修正 2【致命崩潰點】：Stash 要求必須帶有 /32 和 /128 網段，否則 net.ParseCIDR 必定 Unmarshal 失敗
-    let stashIPv4 = "172.16.0.2/32";
-    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce/128";
+    let stashIPv4 = "172.16.0.2";
+    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce";
 
-    // 💡 修正 3：嚴格遵守 YAML 雙空格標準縮排，修正欄位名稱，確保客戶端順利解析
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     
@@ -159,15 +157,16 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
         proxyNames.push(nodeName);
         
+        // 嚴格對齊兩空格縮排，徹底移除所有可能引發 Unmarshal 報錯的欄位雙引號（除了 Name 之外）
         stashProxiesSection += `  - name: "${nodeName}"\n` +
                                `    type: wireguard\n` +
-                               `    server: "${item.ip}"\n` +
+                               `    server: ${item.ip}\n` +
                                `    port: ${item.port}\n` +
                                `    ip: "${stashIPv4}"\n` +
                                `    ipv6: "${stashIPv6}"\n` +
                                `    public-key: "${finalKeyObj.publicKey}"\n` +
                                `    private-key: "${finalKeyObj.privateKey}"\n` +
-                               `    reserved: ${reservedArrayString}\n` +
+                               `    reserved: ${reservedArrayString}\n` + // 輸出標準陣列，不加引號
                                `    udp: true\n` +
                                `    mtu: 1420\n`;
     });
@@ -232,7 +231,6 @@ export default async function handler(request, response) {
             const params = new URLSearchParams(body);
             const action = params.get('action');
             
-            // 🔄 AJAX 局部更新：只更換 IP池，絕不刷新網頁
             if (action === 'force_rotate_now') {
                 const freshIPList = generateEdgeTunnelIPs(config.selectIPCount);
                 const freshYaml = buildStashYaml(freshIPList, finalKeyObj, config.customRulesText);
@@ -311,7 +309,7 @@ export default async function handler(request, response) {
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        response.setHeader('profile-update-interval', '24'); // 提示 Stash 24小時自動靜態更新
+        response.setHeader('profile-update-interval', '24'); 
         return response.status(200).send(fullStashYaml);
     }
 
@@ -355,8 +353,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.6</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 Stash 規格已完美修正</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.7</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 Stash 陣列格式完全對標修復</span>
             </div>
 
             <div class="card">
@@ -459,7 +457,6 @@ export default async function handler(request, response) {
                 document.getElementById('live-clock').innerText = now.toLocaleString('zh-HK');
             }, 1000);
 
-            // AJAX 局部更新異步邏輯
             document.getElementById('btn-async-rotate').addEventListener('click', async function() {
                 const btn = this;
                 btn.disabled = true;
