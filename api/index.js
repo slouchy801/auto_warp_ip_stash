@@ -74,18 +74,15 @@ async function saveConfig(config) {
 // ==========================================
 const TRUE_WARP_ANYCAST = [
     '162.159.192.1', '162.159.193.1', '162.159.195.1', '162.159.204.1',
-    '188.114.96.1',  '188.114.97.1',  '188.114.98.1',  '188.114.99.1',
-    '162.159.192.2', '162.159.193.2', '162.159.195.2', '162.159.204.2'
+    '188.114.96.1',  '188.114.97.1',  '188.114.98.1',  '188.114.99.1'
 ];
-const WARP_PORTS = [51820, 2408, 4500, 854, 892];
+const WARP_PORTS = [51820, 2408, 4500];
 
 function generateTrueAnycastIPs(count) {
     let pool = [];
-    // 使用真正通車的專用網段隨機偏移末尾或直接採用經典優選
     for (let i = 0; i < 50; i++) {
         const baseIp = TRUE_WARP_ANYCAST[Math.floor(Math.random() * TRUE_WARP_ANYCAST.length)];
         const port = WARP_PORTS[Math.floor(Math.random() * WARP_PORTS.length)];
-        // 162.159.192.X 隨機化
         const ipParts = baseIp.split('.');
         ipParts[3] = Math.floor(Math.random() * 250) + 1;
         pool.push({ ip: ipParts.join('.'), port });
@@ -138,6 +135,7 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
+// 🍏 100% 對齊 EdgeTunnel / warp2clash 格式，剔除致死參數，修正網段
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
     let resArr = [0, 0, 0];
     if (Array.isArray(finalKeyObj.reserved)) {
@@ -157,15 +155,14 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         y += `    type: wireguard\n`;
         y += `    server: ${item.ip}\n`;
         y += `    port: ${item.port}\n`;
-        y += `    ip: 172.16.0.2\n`;
-        y += `    ipv6: 2606:1111:1111:1111:1111:1111:1111:9eae\n`;
+        y += `    ip: 172.16.0.2/32\n`; // ✅ 修正：補回 /32 CIDR 宣告
+        y += `    ipv6: 2606:4700:110:8283:195e:d7a5:b12b:7e98/128\n`; // ✅ 修正：對齊真正官方虛擬網卡 IPv6 
         y += `    private-key: ${finalKeyObj.privateKey}\n`; 
         y += `    public-key: ${finalKeyObj.publicKey}\n`;   
         y += `    reserved: [${resArr.join(', ')}]\n`; 
         y += `    udp: true\n`;
-        y += `    mtu: 1336\n`; // 優化 MTU 值，防大包被封鎖
-        y += `    remote-dns-resolve: true\n`;
-        y += `    dns: [1.1.1.1, 1.0.0.1]\n\n`;
+        y += `    mtu: 1420\n`; // ✅ 修正：改回通用最穩定的 1420
+        y += `    remote-dns-resolve: false\n\n`; // 🚨 修正：絕對不能為 true，否則必 Timeout
     });
 
     y += "proxy-groups:\n";
@@ -364,8 +361,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.3.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 專用 Anycast 優選對齊成功 (不 Timeout)</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.4.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #ff3b30;">🔥 已對齊 EdgeTunnel 完全修正版</span>
             </div>
 
             <div class="card">
@@ -466,14 +463,13 @@ export default async function handler(request, response) {
         </div>
         
         <script>
-            // 實時透過 API 讀取當前 Browser 公網 IP
             fetch('https://api.ipify.org?format=json')
                 .then(res => res.json())
                 .then(data => {
                     document.getElementById('browser-real-ip').innerText = data.ip;
                 })
                 .catch(() => {
-                    document.getElementById('browser-real-ip').innerText = "讀取失敗 (請檢查本地網絡)";
+                    document.getElementById('browser-real-ip').innerText = "讀取失敗";
                 });
 
             setInterval(() => {
