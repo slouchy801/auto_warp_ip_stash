@@ -30,7 +30,7 @@ function redisCommand(cmd, args = []) {
     });
 }
 
-const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: "0,0,0", time: "系統自動初始化" };
+const fallbackKey = { privateKey: "GE0...", publicKey: "CF...", reserved: [0, 0, 0], time: "系統自動初始化" };
 
 let memoryBackup = {
     safeKey: fallbackKey,
@@ -121,7 +121,7 @@ async function registerWarpAccount() {
                 if (buf.length >= 3) resArr = [buf[0], buf[1], buf[2]];
             } catch(e){}
         }
-        return { privateKey: priv, publicKey: pub, reserved: resArr.join(','), time: new Date().toLocaleTimeString() };
+        return { privateKey: priv, publicKey: pub, reserved: resArr, time: new Date().toLocaleTimeString() };
     } catch (e) { return null; }
 }
 
@@ -132,49 +132,65 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// 🍏 100% 精準致敬 cmliu/Warp2Clash 原始結構
+// 🍏 100% 仿 generator-warp 安全防爆輸出器
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    let stashIPv4 = "172.16.0.2";
-    let stashIPv6 = "2606:1111:1111:1111:1111:1111:1111:9eae"; 
+    // 確保 reserved 係陣列
+    let resArr = [0, 0, 0];
+    if (Array.isArray(finalKeyObj.reserved)) {
+        resArr = finalKeyObj.reserved;
+    } else if (typeof finalKeyObj.reserved === 'string') {
+        resArr = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
+    }
 
-    let stashProxiesSection = "proxies:\n";
+    let y = "";
+    y += "proxies:\n";
     let proxyNames = [];
-    
+
+    // 精準輸出 Proxy 陣列
     finalIPList.forEach((item, index) => {
-        const nodeName = `Warp${String(index + 1).padStart(2, '0')}`; // 還原 Warp01, Warp02 命名風格
+        const nodeName = `Warp${String(index + 1).padStart(2, '0')}`;
         proxyNames.push(nodeName);
-        
-        // 💡 遵循 Warp2Clash 純淨格式：無引號，remote-dns 同 dns 在節點內部對齊 4 格
-        stashProxiesSection += `  - name: ${nodeName}\n` +
-                               `    type: wireguard\n` +
-                               `    server: ${item.ip}\n` +
-                               `    port: ${item.port}\n` +
-                               `    ip: ${stashIPv4}\n` +
-                               `    ipv6: ${stashIPv6}\n` +
-                               `    private-key: ${finalKeyObj.privateKey}\n` +
-                               `    public-key: ${finalKeyObj.publicKey}\n` +
-                               `    udp: true\n` +
-                               `    mtu: 1280\n` +
-                               `    remote-dns-resolve: true\n` +
-                               `    dns: [ 1.1.1.1, 1.0.0.1 ]\n\n`;
+
+        y += `  - name: ${nodeName}\n`;
+        y += `    type: wireguard\n`;
+        y += `    server: ${item.ip}\n`;
+        y += `    port: ${item.port}\n`;
+        y += `    ip: 172.16.0.2\n`;
+        y += `    ipv6: 2606:1111:1111:1111:1111:1111:1111:9eae\n`;
+        y += `    private-key: ${finalKeyObj.privateKey}\n`;
+        y += `    public-key: ${finalKeyObj.publicKey}\n`;
+        y += `    reserved: [${resArr.join(', ')}]\n`; // 加入看齊機制
+        y += `    udp: true\n`;
+        y += `    mtu: 1280\n`;
+        y += `    remote-dns-resolve: true\n`;
+        y += `    dns: [1.1.1.1, 1.0.0.1]\n\n`;
     });
 
-    let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
-    proxyNames.forEach(name => { stashGroupSection += `    - ${name}\n`; });
-    stashGroupSection += `    - DIRECT\n`;
+    // 構建策略組
+    y += "proxy-groups:\n";
+    y += "  - name: PROXY\n";
+    y += "    type: select\n";
+    y += "    proxies:\n";
+    proxyNames.forEach(name => {
+        y += `      - ${name}\n`;
+    });
+    y += "      - DIRECT\n\n";
 
-    let processedCustomRules = customRulesText
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'))
-        .map(line => `  - ${line}`)
-        .join('\n');
+    // 構建路由規則
+    y += "rules:\n";
+    if (customRulesText) {
+        customRulesText.split('\n').forEach(line => {
+            let l = line.trim();
+            if (l && !l.startsWith('#')) {
+                if (!l.startsWith('-')) l = `- ${l}`;
+                y += `  ${l}\n`;
+            }
+        });
+    }
+    y += "  - GEOIP,private,DIRECT\n";
+    y += "  - MATCH,PROXY";
 
-    let stashRulesSection = `rules:\n`;
-    if (processedCustomRules) stashRulesSection += `${processedCustomRules}\n`;
-    stashRulesSection += `  - GEOIP,private,DIRECT\n  - MATCH,PROXY`;
-
-    return `${stashProxiesSection}\n${stashGroupSection}\n${stashRulesSection}`;
+    return y;
 }
 
 // ==========================================
@@ -341,8 +357,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.1.1</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 正宗 cmliu/Warp2Clash 規範套用成功</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.2.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 完全對標 generator-warp 防爆安全引擎</span>
             </div>
 
             <div class="card">
@@ -352,7 +368,7 @@ export default async function handler(request, response) {
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
                 <h2>⚡ 一鍵免手動金鑰生成器</h2>
-                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">直接向 Cloudflare 申請一條全新 WARP 金鑰，生成後可在下方下拉選單直接鎖定！</p>
+                <p style="margin-top: 10px; font-size: 14px; opacity: 0.9;">直接向 Cloudflare 申請一條全新 WARP 金鑰（內置安全 Reserved 陣列）！</p>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
                     <button type="submit" class="btn-reg">⚡ 依家立刻獲取全新金鑰</button>
@@ -382,7 +398,8 @@ export default async function handler(request, response) {
                         <div class="active-box">
                             <strong>🟢 當前 Stash 連線【鎖定套用中】金鑰詳情：</strong><br>
                             • PrivateKey: <span style="word-break:break-all;">${finalKeyObj.privateKey}</span><br>
-                            • PublicKey: <span>${finalKeyObj.publicKey}</span>
+                            • PublicKey: <span>${finalKeyObj.publicKey}</span><br>
+                            • Reserved: <span>[${Array.isArray(finalKeyObj.reserved) ? finalKeyObj.reserved.join(', ') : finalKeyObj.reserved}]</span>
                         </div>
                     </div>
 
