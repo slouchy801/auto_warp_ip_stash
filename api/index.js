@@ -132,47 +132,35 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// 🍏 核心修正：對標 warp-to-clash 官方標準 YAML 輸出格式
+// 🍏 100% 精準還原你提供嘅真 warp-to-clash 結構
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    // 🚀 徹底解決 Line 69 unmarshal 錯誤：將 "0,0,0" 字串嚴格轉為標準 YAML 整數陣列 [0, 0, 0]
-    let reservedArrayString = "[0, 0, 0]";
-    if (finalKeyObj && finalKeyObj.reserved) {
-        try {
-            const parts = finalKeyObj.reserved.split(',').map(num => parseInt(num.trim()) || 0);
-            if (parts.length === 3) {
-                reservedArrayString = `[${parts.join(', ')}]`;
-            }
-        } catch(e) {
-            reservedArrayString = "[0, 0, 0]";
-        }
-    }
-
     let stashIPv4 = "172.16.0.2";
-    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce";
+    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce"; // 保留預設，亦可依你真code格式不帶引號
 
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
     
     finalIPList.forEach((item, index) => {
-        const nodeName = `🚀 WG-噴泉優選-[${index+1}]`;
+        const nodeName = `Warp${String(index + 1).padStart(2, '0')}`; // 還原 Warp01, Warp02 命名風格
         proxyNames.push(nodeName);
         
-        // 嚴格對齊兩空格縮排，徹底移除所有可能引發 Unmarshal 報錯的欄位雙引號（除了 Name 之外）
-        stashProxiesSection += `  - name: "${nodeName}"\n` +
+        // 💡 修正：唔要引號， remote-dns-resolve 同 dns 完全放喺每一個 proxy 內部，嚴格對齊
+        stashProxiesSection += `  - name: ${nodeName}\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
                                `    port: ${item.port}\n` +
-                               `    ip: "${stashIPv4}"\n` +
-                               `    ipv6: "${stashIPv6}"\n` +
-                               `    public-key: "${finalKeyObj.publicKey}"\n` +
-                               `    private-key: "${finalKeyObj.privateKey}"\n` +
-                               `    reserved: ${reservedArrayString}\n` + // 輸出標準陣列，不加引號
+                               `    ip: ${stashIPv4}\n` +
+                               `    ipv6: ${stashIPv6}\n` +
+                               `    private-key: ${finalKeyObj.privateKey}\n` +
+                               `    public-key: ${finalKeyObj.publicKey}\n` +
                                `    udp: true\n` +
-                               `    mtu: 1420\n`;
+                               `    mtu: 1280\n` +
+                               `    remote-dns-resolve: true\n` +
+                               `    dns: [ 1.1.1.1, 1.0.0.1 ]\n\n`; // 塞喺呢度，絕無放錯位
     });
 
     let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
-    proxyNames.forEach(name => { stashGroupSection += `    - "${name}"\n`; });
+    proxyNames.forEach(name => { stashGroupSection += `    - ${name}\n`; });
     stashGroupSection += `    - DIRECT\n`;
 
     let processedCustomRules = customRulesText
@@ -353,8 +341,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.0.7</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 Stash 陣列格式完全對標修復</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.1.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 節點內置 DNS 縮排完全修復</span>
             </div>
 
             <div class="card">
