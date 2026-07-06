@@ -132,10 +132,10 @@ function getRotateMs(value, unit) {
     return val * 24 * 60 * 60 * 1000;
 }
 
-// 🍏 100% 精準還原你提供嘅真 warp-to-clash 結構
+// 🍏 100% 精準致敬 cmliu/Warp2Clash 原始結構
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
     let stashIPv4 = "172.16.0.2";
-    let stashIPv6 = "2606:4700:110:860a:defb:f7c2:ef4f:9bce"; // 保留預設，亦可依你真code格式不帶引號
+    let stashIPv6 = "2606:1111:1111:1111:1111:1111:1111:9eae"; 
 
     let stashProxiesSection = "proxies:\n";
     let proxyNames = [];
@@ -144,7 +144,7 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
         const nodeName = `Warp${String(index + 1).padStart(2, '0')}`; // 還原 Warp01, Warp02 命名風格
         proxyNames.push(nodeName);
         
-        // 💡 修正：唔要引號， remote-dns-resolve 同 dns 完全放喺每一個 proxy 內部，嚴格對齊
+        // 💡 遵循 Warp2Clash 純淨格式：無引號，remote-dns 同 dns 在節點內部對齊 4 格
         stashProxiesSection += `  - name: ${nodeName}\n` +
                                `    type: wireguard\n` +
                                `    server: ${item.ip}\n` +
@@ -156,7 +156,7 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
                                `    udp: true\n` +
                                `    mtu: 1280\n` +
                                `    remote-dns-resolve: true\n` +
-                               `    dns: [ 1.1.1.1, 1.0.0.1 ]\n\n`; // 塞喺呢度，絕無放錯位
+                               `    dns: [ 1.1.1.1, 1.0.0.1 ]\n\n`;
     });
 
     let stashGroupSection = "proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n";
@@ -341,8 +341,8 @@ export default async function handler(request, response) {
         <div class="container">
             
             <div class="time-banner">
-                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.1.0</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
-                <span style="color: #34c759;">🟢 節點內置 DNS 縮排完全修復</span>
+                <span>⏰ <span style="color:#ff9500; margin-right:8px;">Version 1.1.1</span> 系統實時時間 (HKT)：<span id="live-clock">${currentTimeString}</span></span>
+                <span style="color: #34c759;">🟢 正宗 cmliu/Warp2Clash 規範套用成功</span>
             </div>
 
             <div class="card">
