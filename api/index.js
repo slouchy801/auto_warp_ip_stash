@@ -1,6 +1,15 @@
 // v2.1.0i_Premium_Dark
 const crypto = require('crypto');
 const https = require('https');
+const fs = require('fs');
+
+// 動態讀取本檔案第一行版本號
+let currentVersion = "v2.1.0";
+try {
+    const firstLine = fs.readFileSync(__filename, 'utf8').split('\n')[0];
+    const match = firstLine.match(/\/\/\s*([^\s]+)/);
+    if (match) currentVersion = match[1];
+} catch(e) {}
 
 // ==========================================
 // 🌟 1. 原生 Redis REST API 引擎
@@ -48,7 +57,6 @@ const fallbackKey = {
     isFallback: true 
 };
 
-// 🍏 完美適配本地體驗的預設路由分流規則
 const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOSITE,CN,DIRECT
 - GEOIP,CN,DIRECT
@@ -262,7 +270,6 @@ export default async function handler(request, response) {
     const hostUrl = `https://${request.headers.host}${urlStr.split('?')[0]}`;
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || typeParam === 'stash';
 
-    // 讀取當前 Browser 客戶端的 IP 與地理位置 (Vercel Headers)
     const clientIp = request.headers['x-forwarded-for'] || request.socket.remoteAddress || '127.0.0.1';
     const clientCountry = request.headers['x-vercel-ip-country'] || 'UNKNOWN';
     const clientRegion = request.headers['x-vercel-ip-country-region'] || '';
@@ -293,26 +300,27 @@ export default async function handler(request, response) {
                 const selectedId = params.get('active_key_id') || "safe";
                 config.currentActiveId = selectedId;
                 
-                if (params.get('make_safe_permanent') === 'true') {
-                    if (selectedId === "latest" && config.latestRegisteredObj) {
-                        config.safeKey = JSON.parse(JSON.stringify(config.latestRegisteredObj));
-                        config.safeKey.time = "鎖定覆蓋 (" + new Date().toLocaleTimeString('zh-HK') + ")";
-                        config.currentActiveId = "safe";
-                    } else if (selectedId.startsWith("history_")) {
-                        const idx = parseInt(selectedId.split("_")[1]);
-                        if (config.keyHistoryPool && config.keyHistoryPool[idx]) {
-                            config.safeKey = JSON.parse(JSON.stringify(config.keyHistoryPool[idx]));
-                            config.safeKey.time = "鎖定覆蓋 (" + new Date().toLocaleTimeString('zh-HK') + ")";
-                            config.currentActiveId = "safe";
-                        }
-                    }
-                }
-
                 config.customRulesText = params.get('custom_rules') || defaultRulesText;
                 config.useForceRotate = params.get('use_force') === 'true';
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
             } 
+            else if (action === 'make_safe_permanent_action') {
+                const selectedId = params.get('active_key_id') || "safe";
+                config.currentActiveId = selectedId;
+                if (selectedId === "latest" && config.latestRegisteredObj) {
+                    config.safeKey = JSON.parse(JSON.stringify(config.latestRegisteredObj));
+                    config.safeKey.time = "鎖定覆蓋 (" + new Date().toLocaleTimeString('zh-HK') + ")";
+                    config.currentActiveId = "safe";
+                } else if (selectedId.startsWith("history_")) {
+                    const idx = parseInt(selectedId.split("_")[1]);
+                    if (config.keyHistoryPool && config.keyHistoryPool[idx]) {
+                        config.safeKey = JSON.parse(JSON.stringify(config.keyHistoryPool[idx]));
+                        config.safeKey.time = "鎖定覆蓋 (" + new Date().toLocaleTimeString('zh-HK') + ")";
+                        config.currentActiveId = "safe";
+                    }
+                }
+            }
             else if (action === 'click_register_new') {
                 const newAcc = await registerWarpAccount();
                 if (newAcc) {
@@ -322,8 +330,15 @@ export default async function handler(request, response) {
                     if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
                 }
             }
-            else if (action === 'force_rotate_now') {
+            else if (action === 'auto_rotate_trigger') {
                 config.lastRotateTime = Date.now();
+                const autoAcc = await registerWarpAccount();
+                if (autoAcc) {
+                    if (config.latestRegisteredObj) config.keyHistoryPool.unshift(config.latestRegisteredObj);
+                    config.latestRegisteredObj = autoAcc;
+                    if (config.useForceRotate) config.currentActiveId = "latest";
+                    if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
+                }
             }
             await saveConfig(config);
         } catch (e) {}
@@ -354,11 +369,6 @@ export default async function handler(request, response) {
     }
 
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
-    
-    // 生成 [dd/mm/yyyy][hh:mm:ss] 格式的右側時間戳
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const customTimeStr = `[${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}][${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
 
     const html = `
     <!DOCTYPE html>
@@ -366,7 +376,7 @@ export default async function handler(request, response) {
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>[Auto-WIS] (v2.1.0)</title>
+        <title>[Auto-WIS] (${currentVersion})</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d0e12; color: #e2e8f0; padding: 25px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
@@ -376,18 +386,20 @@ export default async function handler(request, response) {
             .time-banner .right-time { color: #94a3b8; font-weight: normal; }
             h2 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #222633; padding-bottom: 12px; font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
             .row { margin-bottom: 18px; }
+            .action-row { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 18px; width: 100%; }
+            .action-row .select-container { flex: 1; }
             label { font-weight: 600; display: block; margin-bottom: 8px; color: #94a3b8; font-size: 14px; }
             input[type="number"], select, textarea { padding: 12px; background: #0d0e12; border: 1px solid #2d334a; border-radius: 8px; width: 100%; box-sizing: border-box; color: #e2e8f0; transition: border-color 0.2s; }
             input[type="number"]:focus, select:focus, textarea:focus { border-color: #38bdf8; outline: none; }
             textarea { height: 140px; font-family: "Fira Code", monospace; font-size: 13px; }
-            button { background: #38bdf8; color: #0d0e12; border: none; padding: 12px 22px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; box-shadow: 0 4px 12px rgba(56,189,248,0.2); }
+            button { background: #38bdf8; color: #0d0e12; border: none; padding: 12px 22px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; box-shadow: 0 4px 12px rgba(56,189,248,0.2); height: 43px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; white-space: nowrap; }
             button:hover { opacity: 0.9; transform: translateY(-1px); }
+            .btn-orange { background: #fb923c; box-shadow: 0 4px 12px rgba(251,146,60,0.2); }
+            .btn-green { background: #10b981; box-shadow: 0 4px 12px rgba(16,185,129,0.2); color: #0d0e12; }
             .ip-badge { background: #1e293b; color: #38bdf8; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-weight: bold; border: 1px solid #2d334a; }
             .active-box { background: rgba(16,185,129,0.05); border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 12px; color: #34d399; border-top: 1px solid rgba(16,185,129,0.1); border-right: 1px solid rgba(16,185,129,0.1); border-bottom: 1px solid rgba(16,185,129,0.1); line-height: 1.6; }
             .warn-box { background: rgba(239,68,68,0.05); border-left: 4px solid #ef4444; padding: 14px; border-radius: 6px; color: #f87171; margin-top: 12px; font-size: 14px; border-top: 1px solid rgba(239,68,68,0.1); border-right: 1px solid rgba(239,68,68,0.1); border-bottom: 1px solid rgba(239,68,68,0.1); }
             pre { background: #0d0e12; color: #34d399; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: "Fira Code", monospace; font-size: 13px; border: 1px solid #222633; margin: 0; margin-top: 15px; }
-            
-            /* Toggle YAML styling */
             .yaml-header { cursor: pointer; user-select: none; }
             .yaml-header:hover { color: #60a5fa; }
             .arrow-icon { transition: transform 0.3s; display: inline-block; font-size: 16px; color: #64748b; }
@@ -399,13 +411,11 @@ export default async function handler(request, response) {
     </head>
     <body>
         <div class="container">
-            <!-- 頂部資訊列：左標題、右時間，中間不留字 -->
             <div class="time-banner">
-                <span class="left-title">[Auto-WIS] (v2.1.0)</span>
-                <span class="right-time">${customTimeStr}</span>
+                <span class="left-title">[Auto-WIS] (${currentVersion})</span>
+                <span class="right-time" id="live-clock">--/--/---- --:--:--</span>
             </div>
 
-            <!-- 當前客端環境狀態 -->
             <div class="card">
                 <h2>🌐 物理防禦端點狀態</h2>
                 <p>📡 當前 Browser IP：<span class="ip-badge">${clientIp}</span></p>
@@ -416,29 +426,28 @@ export default async function handler(request, response) {
                 <h2 style="color: #38bdf8;">⚡ 免手動金鑰生成器 (一鍵註冊)</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
-                    <button type="submit" style="background:#fb923c; color:#0d0e12; width:100%; padding:15px; font-size:16px; box-shadow: 0 4px 15px rgba(251,146,60,0.3);">⚡ 獲取全新合規安全 Warp 密鑰</button>
+                    <button type="submit" class="btn-orange" style="width:100%; padding:15px; font-size:16px; height:auto;">⚡ 獲取全新合規安全 Warp 密鑰</button>
                 </form>
             </div>
 
             <div class="card">
                 <h2>⚙️ 密鑰池與完整路由控制面版</h2>
-                <form method="POST">
+                
+                <form id="main-config-form" method="POST">
                     <input type="hidden" name="action" value="save_settings">
                     
-                    <div class="row">
-                        <label>🎯 選擇套用金鑰（支持永久鎖定與歷史緩衝池）：</label>
-                        <select name="active_key_id" style="font-family: monospace; font-size: 13px;">
-                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${config.safeKey.isFallback ? '⚠️未設定打底賬戶' : `永久打底 [IP:${config.safeKey.ipv4}] [Res:${config.safeKey.reserved.join(',')}]`} (${config.safeKey.time})</option>
-                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - IP: ${config.latestRegisteredObj.ipv4} | Res: [${config.latestRegisteredObj.reserved.join(',')}] | (${config.latestRegisteredObj.time})</option>` : ''}
-                            ${config.keyHistoryPool.map((k, idx) => `
-                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史備份池 ${idx+1}] - IP: ${k.ipv4} | Res: [${k.reserved.join(',')}] | (${k.time})</option>
-                            `).join('')}
-                        </select>
-                    </div>
-
-                    <div class="row" style="display: flex; align-items: center; gap: 8px;">
-                        <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true" style="width:auto; margin:0; cursor:pointer;">
-                        <label for="make_safe" style="display:inline; color:#38bdf8; cursor:pointer; margin:0;">💾 將選中金鑰覆蓋並鎖定為「永久 Safe Key」</label>
+                    <div class="action-row">
+                        <div class="select-container">
+                            <label>🎯 選擇套用金鑰（支持永久鎖定與歷史緩衝池）：</label>
+                            <select id="active_key_select" name="active_key_id" style="font-family: monospace; font-size: 13px;" onchange="autoSaveConfig()">
+                                <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${config.safeKey.isFallback ? '⚠️未設定打底賬戶' : `永久打底 [IP:${config.safeKey.ipv4}] [Res:${config.safeKey.reserved.join(',')}]`} (${config.safeKey.time})</option>
+                                ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - IP: ${config.latestRegisteredObj.ipv4} | Res: [${config.latestRegisteredObj.reserved.join(',')}] | (${config.latestRegisteredObj.time})</option>` : ''}
+                                ${config.keyHistoryPool.map((k, idx) => `
+                                    <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史備份池 ${idx+1}] - IP: ${k.ipv4} | Res: [${k.reserved.join(',')}] | (${k.time})</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <button type="button" class="btn-green" onclick="lockAsSafeKey()">💾 覆蓋為永久 Safe Key</button>
                     </div>
 
                     ${finalKeyObj.isFallback ? `
@@ -458,32 +467,35 @@ export default async function handler(request, response) {
 
                     <div class="row" style="margin-top:20px;">
                         <label>✍️ 配置分流 Rules 路由規則：</label>
-                        <textarea name="custom_rules">${config.customRulesText}</textarea>
+                        <textarea name="custom_rules" onchange="autoSaveConfig()">${config.customRulesText}</textarea>
                     </div>
 
                     <div class="row" style="background: #1a1d29; padding: 15px; border-radius: 8px; border: 1px solid #2d334a;">
                         <label style="margin-bottom:10px;">⏱️ 定時交棒刷新週期：</label>
                         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                             <span>每</span> 
-                            <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;">
-                            <select name="rotate_unit" style="width:100px; display:inline-block; padding:8px;">
+                            <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;" onchange="autoSaveConfig()">
+                            <select name="rotate_unit" style="width:100px; display:inline-block; padding:8px;" onchange="autoSaveConfig()">
                                 <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
                                 <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
                                 <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
                             </select>
-                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;">
+                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;" onchange="autoSaveConfig()">
                             <label for="use_force" style="display:inline; font-weight:normal; color:#e2e8f0; cursor:pointer; margin:0;">時間到強制交棒</label>
                         </div>
                     </div>
-
-                    <button type="submit">💾 儲存並同步至雲端 Redis</button>
                 </form>
 
-                <form method="POST" style="margin-top:10px;">
-                    <input type="hidden" name="action" value="force_rotate_now">
-                    <button type="submit" style="background:#10b981; color:#0d0e12; box-shadow: 0 4px 12px rgba(16,185,129,0.2);">🔄 立即手動刷新定時器</button>
+                <form id="lock-safe-form" method="POST" style="display:none;">
+                    <input type="hidden" name="action" value="make_safe_permanent_action">
+                    <input type="hidden" id="lock_safe_key_id" name="active_key_id" value="">
                 </form>
-                <p style="font-size:13px; color:#64748b; margin-top:12px; font-family:monospace;">⏳ 距離下一次自動交棒剩餘：<span style="color:#fb923c;">${nextRotateCountDown}</span> 秒</p>
+
+                <form id="auto-rotate-form" method="POST" style="display:none;">
+                    <input type="hidden" name="action" value="auto_rotate_trigger">
+                </form>
+
+                <p style="font-size:13px; color:#64748b; margin-top:12px; font-family:monospace;">⏳ 距離下一次自動交棒剩餘：<span style="color:#fb923c; font-weight:bold;" id="countdown-timer">--</span> 秒</p>
             </div>
 
             <div class="card" style="border: 1px dashed #38bdf8; background: rgba(56,189,248,0.02);">
@@ -491,7 +503,6 @@ export default async function handler(request, response) {
                 <div style="background:#0d0e12; padding:14px; border-radius:8px; font-family:monospace; font-size:13px; cursor:pointer; border:1px solid #222633; color:#38bdf8;" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製訂閱網址！');">👉 點擊複製：${hostUrl}?type=stash</div>
             </div>
 
-            <!-- 可摺疊的 YAML 預覽區域 -->
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
@@ -500,6 +511,51 @@ export default async function handler(request, response) {
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
         </div>
+
+        <script>
+            // 1. 右上角動態時鐘
+            function updateClock() {
+                const d = new Date();
+                const pad = (n) => String(n).padStart(2, '0');
+                const timeStr = '[' + pad(d.getDate()) + '/' + pad(d.getMonth()+1) + '/' + d.getFullYear() + '][' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ']';
+                document.getElementById('live-clock').innerText = timeStr;
+            }
+            setInterval(updateClock, 1000);
+            updateClock();
+
+            // 2. 倒數秒數動態計時
+            let timeLeft = parseInt("${nextRotateCountDown}") || 0;
+            const countdownEl = document.getElementById('countdown-timer');
+            
+            function updateCountdown() {
+                if (timeLeft <= 0) {
+                    countdownEl.innerText = "0";
+                    // 倒數歸零時，全自動提交表單觸發刷新
+                    document.getElementById('auto-rotate-form').submit();
+                } else {
+                    countdownEl.innerText = timeLeft;
+                    timeLeft--;
+                }
+            }
+            setInterval(updateCountdown, 1000);
+            updateCountdown();
+
+            // 3. 獨立按鈕動作：點擊將選中 Key 覆蓋為永久 Safe Key
+            function lockAsSafeKey() {
+                const currentSelected = document.getElementById('active_key_select').value;
+                if (currentSelected === 'safe') {
+                    alert('當前選中的已經是永久打底密鑰，無需覆蓋。');
+                    return;
+                }
+                document.getElementById('lock_safe_key_id').value = currentSelected;
+                document.getElementById('lock-safe-form').submit();
+            }
+
+            // 4. 自動儲存機制：當規則或定時設定改變時，直接向後端提交儲存
+            function autoSaveConfig() {
+                document.getElementById('main-config-form').submit();
+            }
+        </script>
     </body>
     </html>
     `;
