@@ -60,9 +60,7 @@ let memoryBackup = {
     lastRotateTime: Date.now(),
     customRulesText: "# 在此輸入自訂 Rules，每行一條\n- DOMAIN-SUFFIX,netflix.com,PROXY",
     currentIPList: [
-        { ip: 'engage.cloudflareclient.com', port: 2408 },
-        { ip: '162.159.192.1', port: 51820 },
-        { ip: '162.159.193.1', port: 2408 }
+        { ip: 'engage.cloudflareclient.com', port: 2408 }
     ] 
 };
 
@@ -87,18 +85,6 @@ async function saveConfig(config) {
     } catch(e){}
 }
 
-// 🎯 優先使用官方穩定端點，防 Anycast 盲猜死網
-function getUltimateAnycastList(count) {
-    const pool = [
-        { ip: 'engage.cloudflareclient.com', port: 2408 },
-        { ip: '162.159.192.1', port: 51820 },
-        { ip: '162.159.193.1', port: 2408 },
-        { ip: '162.159.195.1', port: 4500 },
-        { ip: '104.19.0.231', port: 51820 }
-    ];
-    return pool.slice(0, count);
-}
-
 function cfPost(url, data) {
     return new Promise((resolve, reject) => {
         const u = new URL(url);
@@ -108,7 +94,7 @@ function cfPost(url, data) {
             headers: { 
                 'Content-Type': 'application/json', 
                 'User-Agent': 'okhttp/3.12.1', 
-                'CF-Client-Version': 'a-6.11-2152', // 🍏 補上客戶端版本頭，確保 API 穩定回傳
+                'CF-Client-Version': 'a-6.11-2152', // 🍏 補上客戶端版本頭，確保 API 穩定
                 'Content-Length': Buffer.byteLength(postData) 
             }
         };
@@ -130,7 +116,7 @@ function cfPost(url, data) {
 // ==========================================
 async function registerWarpAccount() {
     try {
-        // 🍏 完美修復：生成真實合法的 Curve25519 金鑰對
+        // 🍏 生成真實合法的 Curve25519 金鑰對
         const { privateKey, publicKey } = crypto.generateKeyPairSync('x25519', {
             publicKeyEncoding: { type: 'spki', format: 'der' },
             privateKeyEncoding: { type: 'pkcs8', format: 'der' }
@@ -147,8 +133,8 @@ async function registerWarpAccount() {
 
         if (!regData || !regData.config) return null;
 
-        // 🍏 完美抽取：對齊所有專屬參數，拒絕硬編碼
-        const peerPubKey = regData.config.peers[0].public_key; // Cloudflare 端的公鑰
+        // 🍏 完美抽取對齊所有專屬參數
+        const peerPubKey = regData.config.peers[0].public_key; 
         const cid = regData.config.client_id || "";
         
         // 提取分配的動態專屬內網 IP 位址
@@ -165,16 +151,15 @@ async function registerWarpAccount() {
         let resArr = [0, 0, 0];
         if (cid) {
             try {
-                // 自動適配 hex 或 base64
                 let buf = cid.length === 6 ? Buffer.from(cid, 'hex') : Buffer.from(cid, 'base64');
                 if (buf.length >= 3) resArr = [buf[0], buf[1], buf[2]];
             } catch(e){}
         }
 
         return { 
-            privateKey: privBase64,   // 我們的私鑰
-            publicKey: pubBase64,     // 我們的公鑰
-            peerPublicKey: peerPubKey, // 節點的公鑰
+            privateKey: privBase64,   
+            publicKey: pubBase64,     
+            peerPublicKey: peerPubKey, 
             ipv4: ipv4Address,
             ipv6: ipv6Address,
             reserved: resArr, 
@@ -192,10 +177,9 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美適配 Stash 的 WireGuard YAML 構建器
+// 🍏 3. 完美適配 Stash 的 WireGuard YAML 構建器（官方域名端口跳躍優化版）
 // ==========================================
 function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
-    // 如果是初始打底無效金鑰，不輸出配置陣列，直接回傳提示，防止客戶端 Unmarshal 崩潰
     if (finalKeyObj.isFallback) {
         return `# [Auto-WIS] 系統檢測到您尚未成功生成有效的 Cloudflare 金鑰對。\n# 請先訪問控制台網頁並點擊「一鍵註冊」生成。`;
     }
@@ -210,27 +194,38 @@ function buildStashYaml(finalIPList, finalKeyObj, customRulesText) {
     let y = "proxies:\n";
     let proxyNames = [];
 
-    finalIPList.forEach((item, index) => {
-        const nodeName = `Warp-節點-${String(index + 1).padStart(2, '0')}`;
-        proxyNames.push(nodeName);
+    // 🍏 使用官方最穩定的通用 Anycast 域名，配合 Cloudflare 官方允許的 4 大 WireGuard 端口進行 Port-Hopping
+    const officialEndpoints = [
+        { name: "⚡ Warp-官方預設 (2408)", port: 2408 },
+        { name: "🛡️ Warp-相容模式 (500)",  port: 500  },
+        { name: "🍂 Warp-繞過分流 (1701)", port: 1701 },
+        { name: "🚀 Warp-穿透模式 (4500)", port: 4500 }
+    ];
 
-        y += `  - name: ${nodeName}\n`;
+    officialEndpoints.forEach((endpoint) => {
+        proxyNames.push(endpoint.name);
+
+        y += `  - name: ${endpoint.name}\n`;
         y += `    type: wireguard\n`;
-        y += `    server: ${item.ip}\n`;
-        y += `    port: ${item.port}\n`;
-        y += `    ip: ${finalKeyObj.ipv4}\n`;          // 🍏 動態帳戶專屬 v4
-        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        // 🍏 動態帳戶專屬 v6
-        y += `    private-key: ${finalKeyObj.privateKey}\n`; // 真正配對的私鑰
-        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; // 🍏 必須填寫 Cloudflare 的 Peer 公鑰
-        y += `    dns: [1.1.1.1, 8.8.8.8]\n`;          // 🍏 補上常規 DNS
+        y += `    server: engage.cloudflareclient.com\n`; // 👈 統一使用官方 Anycast 域名，避免死網與 Anycast 路由超時問題
+        y += `    port: ${endpoint.port}\n`;
+        y += `    ip: ${finalKeyObj.ipv4}\n`;          
+        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; // 真正對齊的 Peer 公鑰
+        y += `    dns: [1.1.1.1, 8.8.8.8]\n`;          // 補上必要 DNS 機制
         y += `    reserved: [${resArr.join(', ')}]\n`; 
         y += `    udp: true\n`;
-        y += `    mtu: 1280\n\n`; // 🍏 剔除高風險的 remote-dns-resolve，只保留最穩定精簡的 Stash 架構
+        y += `    mtu: 1280\n\n`; // 剔除高風險、具版本不相容隱患的 remote-dns-resolve
     });
 
+    // 🍏 自動健康檢查策略組：讓 Stash 在這 4 個端口中秒選通的那一個（如 7ms 的 2408）
     y += "proxy-groups:\n";
     y += "  - name: PROXY\n";
-    y += "    type: select\n";
+    y += "    type: url-test\n"; 
+    y += "    url: http://cp.cloudflare.com/generate_204\n"; // 使用 Cloudflare 自己的 204 機制優化握手
+    y += "    interval: 180\n";  
+    y += "    tolerance: 30\n";  
     y += "    proxies:\n";
     proxyNames.forEach(name => { y += `      - ${name}\n`; });
     y += "      - DIRECT\n\n";
@@ -306,8 +301,6 @@ export default async function handler(request, response) {
                 config.useForceRotate = params.get('use_force') === 'true';
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
-                config.selectIPCount = Math.max(1, Math.min(5, parseInt(params.get('ip_count')) || 3));
-                config.currentIPList = getUltimateAnycastList(config.selectIPCount);
             } 
             else if (action === 'click_register_new') {
                 const newAcc = await registerWarpAccount();
@@ -319,7 +312,6 @@ export default async function handler(request, response) {
                 }
             }
             else if (action === 'force_rotate_now') {
-                config.currentIPList = getUltimateAnycastList(config.selectIPCount);
                 config.lastRotateTime = Date.now();
             }
             await saveConfig(config);
@@ -346,13 +338,13 @@ export default async function handler(request, response) {
 
     const fullStashYaml = buildStashYaml(config.currentIPList, finalKeyObj, config.customRulesText);
 
-    // 🍏 發送純淨且相容性完美的 YAML 給手機 Stash / Clash 核心
+    // 發送相容性完美的 YAML 給手機 Stash / Clash 核心
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         return response.status(200).send(fullStashYaml);
     }
 
-    // GUI 渲染
+    // GUI 控制台網頁渲染
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
     const currentTimeString = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
 
@@ -383,14 +375,14 @@ export default async function handler(request, response) {
     <body>
         <div class="container">
             <div class="time-banner">
-                <span>⚡ Auto-WIS 滿血完全體 (v1.8.0)</span>
+                <span>⚡ Auto-WIS 滿血完全體 (v1.9.0)</span>
                 <span>實時時間: ${currentTimeString}</span>
             </div>
 
             <div class="card">
                 <h2>🌐 物理防禦端點狀態</h2>
                 <p>📍 請求來源地區：<span class="ip-badge">${clientCountry}</span></p>
-                <p>📡 輸出端點：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">${config.currentIPList[0].ip}:${config.currentIPList[0].port}</span></p>
+                <p>📡 輸出端點：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">engage.cloudflareclient.com</span></p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
@@ -440,11 +432,6 @@ export default async function handler(request, response) {
                     <div class="row" style="margin-top:15px;">
                         <label>✍️ 自訂額外 Rules 路由規則：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
-                    </div>
-
-                    <div class="row">
-                        <label>⚡ 輸出優選端點數量：</label>
-                        <input type="number" name="ip_count" value="${config.selectIPCount}" min="1" max="5" style="width:70px;">
                     </div>
 
                     <div class="row">
