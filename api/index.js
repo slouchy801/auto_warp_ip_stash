@@ -1,4 +1,4 @@
-// v2.1.0h_Premium_Dark
+// v2.1.0i_Premium_Dark
 const crypto = require('crypto');
 const https = require('https');
 
@@ -262,6 +262,13 @@ export default async function handler(request, response) {
     const hostUrl = `https://${request.headers.host}${urlStr.split('?')[0]}`;
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || typeParam === 'stash';
 
+    // 讀取當前 Browser 客戶端的 IP 與地理位置 (Vercel Headers)
+    const clientIp = request.headers['x-forwarded-for'] || request.socket.remoteAddress || '127.0.0.1';
+    const clientCountry = request.headers['x-vercel-ip-country'] || 'UNKNOWN';
+    const clientRegion = request.headers['x-vercel-ip-country-region'] || '';
+    const clientCity = request.headers['x-vercel-ip-city'] || '';
+    const geoInfo = `${clientCity}${clientCity && clientRegion ? ', ' : ''}${clientRegion} (${clientCountry})`;
+
     let config = await loadConfig();
 
     let finalKeyObj = config.safeKey;
@@ -348,7 +355,7 @@ export default async function handler(request, response) {
 
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
     
-    // 生成 [dd/mm/yyyy][hh:mm:ss] 格式的左側時間戳
+    // 生成 [dd/mm/yyyy][hh:mm:ss] 格式的右側時間戳
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const customTimeStr = `[${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}][${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
@@ -364,8 +371,9 @@ export default async function handler(request, response) {
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d0e12; color: #e2e8f0; padding: 25px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
             .card { background: #151821; padding: 25px; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); margin-bottom: 20px; border: 1px solid #222633; }
-            .time-banner { background: #1a1d29; border: 1px solid #2d334a; color: #38bdf8; padding: 14px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; font-family: monospace; box-shadow: 0 0 15px rgba(56,189,248,0.1); }
-            .time-banner .right-tag { color: #94a3b8; font-weight: normal; }
+            .time-banner { background: #1a1d29; border: 1px solid #2d334a; color: #38bdf8; padding: 14px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; font-family: monospace; box-shadow: 0 0 15px rgba(56,189,248,0.1); align-items: center; }
+            .time-banner .left-title { font-size: 15px; color: #38bdf8; letter-spacing: 0.5px; }
+            .time-banner .right-time { color: #94a3b8; font-weight: normal; }
             h2 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #222633; padding-bottom: 12px; font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
             .row { margin-bottom: 18px; }
             label { font-weight: 600; display: block; margin-bottom: 8px; color: #94a3b8; font-size: 14px; }
@@ -391,14 +399,17 @@ export default async function handler(request, response) {
     </head>
     <body>
         <div class="container">
+            <!-- 頂部資訊列：左標題、右時間，中間不留字 -->
             <div class="time-banner">
-                <span>${customTimeStr}</span>
-                <span class="right-tag">⚡ Auto-WIS 矩陣分流完全體 (v2.1.0h)</span>
+                <span class="left-title">[Auto-WIS] (v2.1.0)</span>
+                <span class="right-time">${customTimeStr}</span>
             </div>
 
+            <!-- 當前客端環境狀態 -->
             <div class="card">
                 <h2>🌐 物理防禦端點狀態</h2>
-                <p>📡 輸出模式：<span class="ip-badge" style="background:#261e15; color:#fb923c; border-color:#433022;">4 IP × 2 Port 交叉混合矩陣 (共8節點原封不動)</span></p>
+                <p>📡 當前 Browser IP：<span class="ip-badge">${clientIp}</span></p>
+                <p>📍 地理位置資訊：<span class="ip-badge" style="background:#1a2333; color:#60a5fa; border-color:#2b3b54;">${geoInfo}</span></p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #1e293b, #111827); border-color: #38bdf8;">
@@ -416,11 +427,11 @@ export default async function handler(request, response) {
                     
                     <div class="row">
                         <label>🎯 選擇套用金鑰（支持永久鎖定與歷史緩衝池）：</label>
-                        <select name="active_key_id">
-                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${finalKeyObj.isFallback ? '⚠️未設定打底賬戶' : '永久打底賬戶'} (${config.safeKey.time})</option>
-                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - ${config.latestRegisteredObj.time}</option>` : ''}
+                        <select name="active_key_id" style="font-family: monospace; font-size: 13px;">
+                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${config.safeKey.isFallback ? '⚠️未設定打底賬戶' : `永久打底 [IP:${config.safeKey.ipv4}] [Res:${config.safeKey.reserved.join(',')}]`} (${config.safeKey.time})</option>
+                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - IP: ${config.latestRegisteredObj.ipv4} | Res: [${config.latestRegisteredObj.reserved.join(',')}] | (${config.latestRegisteredObj.time})</option>` : ''}
                             ${config.keyHistoryPool.map((k, idx) => `
-                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史備份池 ${idx+1}] - ${k.time}</option>
+                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史備份池 ${idx+1}] - IP: ${k.ipv4} | Res: [${k.reserved.join(',')}] | (${k.time})</option>
                             `).join('')}
                         </select>
                     </div>
@@ -480,6 +491,7 @@ export default async function handler(request, response) {
                 <div style="background:#0d0e12; padding:14px; border-radius:8px; font-family:monospace; font-size:13px; cursor:pointer; border:1px solid #222633; color:#38bdf8;" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製訂閱網址！');">👉 點擊複製：${hostUrl}?type=stash</div>
             </div>
 
+            <!-- 可摺疊的 YAML 預覽區域 -->
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
