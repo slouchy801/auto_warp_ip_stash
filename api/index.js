@@ -1,3 +1,4 @@
+// v2.1.0h_Premium_Dark
 const crypto = require('crypto');
 const https = require('https');
 
@@ -47,13 +48,11 @@ const fallbackKey = {
     isFallback: true 
 };
 
-// 🍏 完全聽從指導：完美適配本地體驗的預設路由分流規則 (Default Rules)
-const defaultRulesText = `# [Default Rules] 內置精細化分流機制
+// 🍏 完美適配本地體驗的預設路由分流規則
+const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOSITE,CN,DIRECT
 - GEOIP,CN,DIRECT
-- GEOIP,PRIVATE,DIRECT
-- DOMAIN-SUFFIX,cloudflare.com,DIRECT
-- DOMAIN-SUFFIX,vercel.app,DIRECT`;
+- GEOIP,PRIVATE,DIRECT`;
 
 let memoryBackup = {
     safeKey: fallbackKey,
@@ -116,19 +115,16 @@ function cfPost(url, data) {
 }
 
 // ==========================================
-// 🔑 2. 徹底重構：完美、正確的 X25519 KeyPair 派生註冊
+// 🔑 2. 與 wgcf 100% 同源的 Curve25519 JWK 密鑰註冊
 // ==========================================
 async function registerWarpAccount() {
     try {
-        // 🍏 使用 JWK 格式獲取真實合規的 X25519 原始密鑰組，徹底擺脫 DER slice 坑
         const { privateKey, publicKey } = crypto.generateKeyPairSync('x25519', {});
         const jwkPriv = privateKey.export({ format: 'jwk' });
         
-        // JWK 中的 d 和 x 是 Base64URL 格式，我們將其還原為標準 WireGuard 所需的 Base64
         const privBase64 = Buffer.from(jwkPriv.d, 'base64url').toString('base64');
         const pubBase64 = Buffer.from(jwkPriv.x, 'base64url').toString('base64');
 
-        // 🍏 修正：傳入的是真正配套的「Public Key」給 Cloudflare！
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": pubBase64, "install_id": "", "fcm_token": ""
         });
@@ -156,8 +152,8 @@ async function registerWarpAccount() {
         }
 
         return { 
-            privateKey: privBase64,   // 留作 Client 本地握手
-            peerPublicKey: peerPubKey, // 伺服器端公鑰
+            privateKey: privBase64,   
+            peerPublicKey: peerPubKey, 
             ipv4: ipv4Address,
             ipv6: ipv6Address,
             reserved: resArr, 
@@ -175,7 +171,7 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美對齊指導：終極 Stash 雙層 YAML 構建器
+// 🍏 3. 完美實現：8 節點矩陣 + 雙層策略組 YAML 構建器
 // ==========================================
 function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
@@ -191,46 +187,48 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 
     let y = "proxies:\n";
     
-    y += `  - name: Warp2408\n`;
-    y += `    type: wireguard\n`;
-    y += `    server: engage.cloudflareclient.com\n`;
-    y += `    port: 2408\n`;
-    y += `    ip: ${finalKeyObj.ipv4}\n`;          
-    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-    y += `    dns:\n`; // 🍏 修正為標準列表格式
-    y += `      - 1.1.1.1\n`;
-    y += `      - 1.0.0.1\n`;
-    y += `    reserved: [${resArr.join(', ')}]\n`; 
-    y += `    udp: true\n`;
-    y += `    mtu: 1280\n\n`;
+    const endpoints = [
+        { ip: "engage.cloudflareclient.com", label: "DNS" },
+        { ip: "162.159.192.1", label: "IP1" },
+        { ip: "162.159.193.1", label: "IP2" },
+        { ip: "188.114.96.1",   label: "IP3" }
+    ];
+    const ports = [2408, 500];
+    let warpProxyNames = [];
 
-    y += `  - name: Warp500\n`;
-    y += `    type: wireguard\n`;
-    y += `    server: engage.cloudflareclient.com\n`;
-    y += `    port: 500\n`;
-    y += `    ip: ${finalKeyObj.ipv4}\n`;          
-    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-    y += `    dns:\n`; // 🍏 修正為標準列表格式
-    y += `      - 1.1.1.1\n`;
-    y += `      - 1.0.0.1\n`;
-    y += `    reserved: [${resArr.join(', ')}]\n`; 
-    y += `    udp: true\n`;
-    y += `    mtu: 1280\n\n`;
+    endpoints.forEach(ep => {
+        ports.forEach(port => {
+            const name = `Warp-${ep.label}-${port}`;
+            warpProxyNames.push(name);
 
-    // 🍏 雙層策略組設計：完全落實你的參數規範 (HTTPS, 600s, 20 tolerance)
+            y += `  - name: ${name}\n`;
+            y += `    type: wireguard\n`;
+            y += `    server: ${ep.ip}\n`;
+            y += `    port: ${port}\n`;
+            y += `    ip: ${finalKeyObj.ipv4}\n`;          
+            y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+            y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+            y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+            y += `    dns:\n`; 
+            y += `      - 1.1.1.1\n`;
+            y += `      - 1.0.0.1\n`;
+            y += `    reserved: [${resArr.join(', ')}]\n`; 
+            y += `    udp: true\n`;
+            y += `    mtu: 1280\n\n`;
+        });
+    });
+
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
-    y += "    url: https://cp.cloudflare.com/generate_204\n"; // 🍏 改為正統 HTTPS
-    y += "    interval: 600\n";  // 🍏 10分鐘一測，防漫遊丟包
-    y += "    tolerance: 20\n";  // 🍏 寬容度對齊 20
+    y += "    url: https://cp.cloudflare.com/generate_204\n"; 
+    y += "    interval: 600\n";        
+    y += "    tolerance: 20\n";       
+    y += "    lazy: true\n";          
+    y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
-    y += "      - Warp2408\n";
-    y += "      - Warp500\n\n";
+    warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
+    y += "\n";
 
     y += "  - name: FINAL\n";
     y += "    type: select\n";
@@ -248,7 +246,6 @@ function buildStashYaml(finalKeyObj, customRulesText) {
             }
         });
     }
-    // 🍏 終極出口收尾
     y += "  - MATCH,FINAL";
     return y;
 }
@@ -262,7 +259,6 @@ export default async function handler(request, response) {
     const urlObj = new URL(urlStr, `https://${request.headers.host || 'localhost'}`);
     const typeParam = urlObj.searchParams.get('type');
     
-    const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
     const hostUrl = `https://${request.headers.host}${urlStr.split('?')[0]}`;
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || typeParam === 'stash';
 
@@ -351,7 +347,11 @@ export default async function handler(request, response) {
     }
 
     const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
-    const currentTimeString = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
+    
+    // 生成 [dd/mm/yyyy][hh:mm:ss] 格式的左側時間戳
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const customTimeStr = `[${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}][${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
 
     const html = `
     <!DOCTYPE html>
@@ -359,42 +359,53 @@ export default async function handler(request, response) {
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Auto-WIS 滿血雙層控制台</title>
+        <title>[Auto-WIS] (v2.1.0)</title>
         <style>
-            body { font-family: -apple-system, system-ui, sans-serif; background: #f4f6f9; color: #333; padding: 25px; margin: 0; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d0e12; color: #e2e8f0; padding: 25px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
-            .card { background: white; padding: 25px; border-radius: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); margin-bottom: 20px; }
-            .time-banner { background: #1e1e24; color: #fff; padding: 12px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; }
-            h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 10px; }
-            .row { margin-bottom: 15px; }
-            label { font-weight: bold; display: block; margin-bottom: 5px; }
-            input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; box-sizing: border-box; }
-            textarea { height: 140px; font-family: monospace; }
-            button { background: #007aff; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-            .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
-            .active-box { background: #e8f5e9; border-left: 5px solid #34c759; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 10px; color:#1b5e20; }
-            .warn-box { background: #ffebee; border-left: 5px solid #ff3b30; padding: 12px; border-radius: 6px; color: #c62828; margin-top: 10px; font-size: 14px; }
-            pre { background: #1e1e1e; color: #4af626; padding: 15px; border-radius: 10px; overflow-x: auto; font-family: monospace; font-size: 13px; }
+            .card { background: #151821; padding: 25px; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); margin-bottom: 20px; border: 1px solid #222633; }
+            .time-banner { background: #1a1d29; border: 1px solid #2d334a; color: #38bdf8; padding: 14px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; font-family: monospace; box-shadow: 0 0 15px rgba(56,189,248,0.1); }
+            .time-banner .right-tag { color: #94a3b8; font-weight: normal; }
+            h2 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #222633; padding-bottom: 12px; font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+            .row { margin-bottom: 18px; }
+            label { font-weight: 600; display: block; margin-bottom: 8px; color: #94a3b8; font-size: 14px; }
+            input[type="number"], select, textarea { padding: 12px; background: #0d0e12; border: 1px solid #2d334a; border-radius: 8px; width: 100%; box-sizing: border-box; color: #e2e8f0; transition: border-color 0.2s; }
+            input[type="number"]:focus, select:focus, textarea:focus { border-color: #38bdf8; outline: none; }
+            textarea { height: 140px; font-family: "Fira Code", monospace; font-size: 13px; }
+            button { background: #38bdf8; color: #0d0e12; border: none; padding: 12px 22px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; box-shadow: 0 4px 12px rgba(56,189,248,0.2); }
+            button:hover { opacity: 0.9; transform: translateY(-1px); }
+            .ip-badge { background: #1e293b; color: #38bdf8; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-weight: bold; border: 1px solid #2d334a; }
+            .active-box { background: rgba(16,185,129,0.05); border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 12px; color: #34d399; border-top: 1px solid rgba(16,185,129,0.1); border-right: 1px solid rgba(16,185,129,0.1); border-bottom: 1px solid rgba(16,185,129,0.1); line-height: 1.6; }
+            .warn-box { background: rgba(239,68,68,0.05); border-left: 4px solid #ef4444; padding: 14px; border-radius: 6px; color: #f87171; margin-top: 12px; font-size: 14px; border-top: 1px solid rgba(239,68,68,0.1); border-right: 1px solid rgba(239,68,68,0.1); border-bottom: 1px solid rgba(239,68,68,0.1); }
+            pre { background: #0d0e12; color: #34d399; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: "Fira Code", monospace; font-size: 13px; border: 1px solid #222633; margin: 0; margin-top: 15px; }
+            
+            /* Toggle YAML styling */
+            .yaml-header { cursor: pointer; user-select: none; }
+            .yaml-header:hover { color: #60a5fa; }
+            .arrow-icon { transition: transform 0.3s; display: inline-block; font-size: 16px; color: #64748b; }
+            #yaml-toggle:checked ~ pre { display: block; }
+            #yaml-toggle:checked ~ .yaml-header .arrow-icon { transform: rotate(180deg); color: #38bdf8; }
+            #yaml-toggle { display: none; }
+            .yaml-container pre { display: none; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="time-banner">
-                <span>⚡ Auto-WIS 完美雙層分流版 (v2.1.0)</span>
-                <span>實時時間: ${currentTimeString}</span>
+                <span>${customTimeStr}</span>
+                <span class="right-tag">⚡ Auto-WIS 矩陣分流完全體 (v2.1.0h)</span>
             </div>
 
             <div class="card">
                 <h2>🌐 物理防禦端點狀態</h2>
-                <p>📍 請求來源地區：<span class="ip-badge">${clientCountry}</span></p>
-                <p>📡 輸出端點：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">engage.cloudflareclient.com</span></p>
+                <p>📡 輸出模式：<span class="ip-badge" style="background:#261e15; color:#fb923c; border-color:#433022;">4 IP × 2 Port 交叉混合矩陣 (共8節點原封不動)</span></p>
             </div>
 
-            <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
-                <h2>⚡ 免手動金鑰生成器 (一鍵註冊)</h2>
+            <div class="card" style="background: linear-gradient(135deg, #1e293b, #111827); border-color: #38bdf8;">
+                <h2 style="color: #38bdf8;">⚡ 免手動金鑰生成器 (一鍵註冊)</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
-                    <button type="submit" style="background:#ff9500; width:100%; padding:15px; font-size:16px;">⚡ 獲取全新合規安全 Warp 密鑰</button>
+                    <button type="submit" style="background:#fb923c; color:#0d0e12; width:100%; padding:15px; font-size:16px; box-shadow: 0 4px 15px rgba(251,146,60,0.3);">⚡ 獲取全新合規安全 Warp 密鑰</button>
                 </form>
             </div>
 
@@ -414,14 +425,14 @@ export default async function handler(request, response) {
                         </select>
                     </div>
 
-                    <div class="row">
-                        <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true">
-                        <label for="make_safe" style="display:inline; color:#007aff; cursor:pointer;">💾 將選中金鑰覆蓋並鎖定為「永久 Safe Key」</label>
+                    <div class="row" style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true" style="width:auto; margin:0; cursor:pointer;">
+                        <label for="make_safe" style="display:inline; color:#38bdf8; cursor:pointer; margin:0;">💾 將選中金鑰覆蓋並鎖定為「永久 Safe Key」</label>
                     </div>
 
                     ${finalKeyObj.isFallback ? `
                         <div class="warn-box">
-                            <strong>⚠️ 提示：</strong> 目前載入的是初始安全密鑰，Stash 訂閱已被暫時鎖定保護。請立刻點擊上方黃色按鈕進行【一鍵註冊】激活。
+                            <strong>⚠️ 提示：</strong> 目前載入的是初始安全密鑰，Stash 訂閱已被暫時鎖定保護。請立刻點擊上方橘色按鈕進行【一鍵註冊】激活。
                         </div>
                     ` : `
                         <div class="active-box">
@@ -434,21 +445,24 @@ export default async function handler(request, response) {
                         </div>
                     `}
 
-                    <div class="row" style="margin-top:15px;">
+                    <div class="row" style="margin-top:20px;">
                         <label>✍️ 配置分流 Rules 路由規則：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
                     </div>
 
-                    <div class="row">
-                        <label>⏱️ 定時交棒刷新週期：</label>
-                        每 <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:60px; display:inline-block;">
-                        <select name="rotate_unit" style="width:100px; display:inline-block;">
-                            <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
-                            <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
-                            <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
-                        </select>
-                        <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''}>
-                        <label for="use_force" style="display:inline; font-weight:normal;">時間到強制交棒</label>
+                    <div class="row" style="background: #1a1d29; padding: 15px; border-radius: 8px; border: 1px solid #2d334a;">
+                        <label style="margin-bottom:10px;">⏱️ 定時交棒刷新週期：</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span>每</span> 
+                            <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;">
+                            <select name="rotate_unit" style="width:100px; display:inline-block; padding:8px;">
+                                <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
+                                <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
+                                <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
+                            </select>
+                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;">
+                            <label for="use_force" style="display:inline; font-weight:normal; color:#e2e8f0; cursor:pointer; margin:0;">時間到強制交棒</label>
+                        </div>
                     </div>
 
                     <button type="submit">💾 儲存並同步至雲端 Redis</button>
@@ -456,18 +470,21 @@ export default async function handler(request, response) {
 
                 <form method="POST" style="margin-top:10px;">
                     <input type="hidden" name="action" value="force_rotate_now">
-                    <button type="submit" style="background:#34c759;">🔄 立即手動刷新定時器</button>
+                    <button type="submit" style="background:#10b981; color:#0d0e12; box-shadow: 0 4px 12px rgba(16,185,129,0.2);">🔄 立即手動刷新定時器</button>
                 </form>
-                <p style="font-size:12px; color:#666;">⏳ 距離下一次自動交棒剩餘：${nextRotateCountDown} 秒</p>
+                <p style="font-size:13px; color:#64748b; margin-top:12px; font-family:monospace;">⏳ 距離下一次自動交棒剩餘：<span style="color:#fb923c;">${nextRotateCountDown}</span> 秒</p>
             </div>
 
-            <div class="card" style="border: 2px solid #007aff;">
+            <div class="card" style="border: 1px dashed #38bdf8; background: rgba(56,189,248,0.02);">
                 <h2>🔗 手機 Stash 雙層分流專用訂閱網址</h2>
-                <div style="background:#f8f9fa; padding:12px; border-radius:8px; font-family:monospace; font-size:13px; cursor:pointer;" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製！');">👉 點擊複製：${hostUrl}?type=stash</div>
+                <div style="background:#0d0e12; padding:14px; border-radius:8px; font-family:monospace; font-size:13px; cursor:pointer; border:1px solid #222633; color:#38bdf8;" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製訂閱網址！');">👉 點擊複製：${hostUrl}?type=stash</div>
             </div>
 
-            <div class="card">
-                <h2>📄 當前純淨 YAML 預覽（雙層策略與 Default Rules 架構）</h2>
+            <div class="card yaml-container">
+                <input type="checkbox" id="yaml-toggle">
+                <label for="yaml-toggle" class="yaml-header">
+                    <h2>📄 當前純淨 YAML 預覽（8節點矩陣架構） <span class="arrow-icon">▼</span></h2>
+                </label>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
         </div>
