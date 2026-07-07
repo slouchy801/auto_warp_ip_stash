@@ -47,13 +47,11 @@ const fallbackKey = {
     isFallback: true 
 };
 
-// 🍏 完全聽從指導：完美適配本地體驗的預設路由分流規則 (Default Rules)
-const defaultRulesText = `# [Default Rules] 內置精細化分流機制
+// 🍏 完美適配本地體驗的預設路由分流規則（已移除 cloudflare 與 vercel 域名直連）
+const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOSITE,CN,DIRECT
 - GEOIP,CN,DIRECT
-- GEOIP,PRIVATE,DIRECT
-- DOMAIN-SUFFIX,cloudflare.com,DIRECT
-- DOMAIN-SUFFIX,vercel.app,DIRECT`;
+- GEOIP,PRIVATE,DIRECT`;
 
 let memoryBackup = {
     safeKey: fallbackKey,
@@ -116,19 +114,17 @@ function cfPost(url, data) {
 }
 
 // ==========================================
-// 🔑 2. 徹底重構：完美、正確的 X25519 KeyPair 派生註冊
+// 🔑 2. 與 wgcf 100% 同源的 Curve25519 JWK 密鑰註冊
 // ==========================================
 async function registerWarpAccount() {
     try {
-        // 🍏 使用 JWK 格式獲取真實合規的 X25519 原始密鑰組，徹底擺脫 DER slice 坑
         const { privateKey, publicKey } = crypto.generateKeyPairSync('x25519', {});
         const jwkPriv = privateKey.export({ format: 'jwk' });
         
-        // JWK 中的 d 和 x 是 Base64URL 格式，我們將其還原為標準 WireGuard 所需的 Base64
         const privBase64 = Buffer.from(jwkPriv.d, 'base64url').toString('base64');
         const pubBase64 = Buffer.from(jwkPriv.x, 'base64url').toString('base64');
 
-        // 🍏 修正：傳入的是真正配套的「Public Key」給 Cloudflare！
+        // 將合規的 X25519 公鑰提交至官方註冊接口
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": pubBase64, "install_id": "", "fcm_token": ""
         });
@@ -156,8 +152,8 @@ async function registerWarpAccount() {
         }
 
         return { 
-            privateKey: privBase64,   // 留作 Client 本地握手
-            peerPublicKey: peerPubKey, // 伺服器端公鑰
+            privateKey: privBase64,   
+            peerPublicKey: peerPubKey, 
             ipv4: ipv4Address,
             ipv6: ipv6Address,
             reserved: resArr, 
@@ -175,7 +171,7 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美對齊指導：終極 Stash 雙層 YAML 構建器
+// 🍏 3. 完美實現：8 節點矩陣 + 雙層策略組 YAML 構建器
 // ==========================================
 function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
@@ -191,47 +187,53 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 
     let y = "proxies:\n";
     
-    y += `  - name: Warp2408\n`;
-    y += `    type: wireguard\n`;
-    y += `    server: engage.cloudflareclient.com\n`;
-    y += `    port: 2408\n`;
-    y += `    ip: ${finalKeyObj.ipv4}\n`;          
-    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-    y += `    dns:\n`; // 🍏 修正為標準列表格式
-    y += `      - 1.1.1.1\n`;
-    y += `      - 1.0.0.1\n`;
-    y += `    reserved: [${resArr.join(', ')}]\n`; 
-    y += `    udp: true\n`;
-    y += `    mtu: 1280\n\n`;
+    // 定義 4 個官方最穩定的 Anycast IP 以及 2 個核心極速端口
+    const endpoints = [
+        { ip: "engage.cloudflareclient.com", label: "DNS" },
+        { ip: "162.159.192.1", label: "IP1" },
+        { ip: "162.159.193.1", label: "IP2" },
+        { ip: "188.114.96.1",   label: "IP3" }
+    ];
+    const ports = [2408, 500];
+    let warpProxyNames = [];
 
-    y += `  - name: Warp500\n`;
-    y += `    type: wireguard\n`;
-    y += `    server: engage.cloudflareclient.com\n`;
-    y += `    port: 500\n`;
-    y += `    ip: ${finalKeyObj.ipv4}\n`;          
-    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-    y += `    dns:\n`; // 🍏 修正為標準列表格式
-    y += `      - 1.1.1.1\n`;
-    y += `      - 1.0.0.1\n`;
-    y += `    reserved: [${resArr.join(', ')}]\n`; 
-    y += `    udp: true\n`;
-    y += `    mtu: 1280\n\n`;
+    // 🍏 循環交叉生成 4x2 = 8 個頂規 WARP 節點
+    endpoints.forEach(ep => {
+        ports.forEach(port => {
+            const name = `Warp-${ep.label}-${port}`;
+            warpProxyNames.push(name);
 
-    // 🍏 雙層策略組設計：完全落實你的參數規範 (HTTPS, 600s, 20 tolerance)
+            y += `  - name: ${name}\n`;
+            y += `    type: wireguard\n`;
+            y += `    server: ${ep.ip}\n`;
+            y += `    port: ${port}\n`;
+            y += `    ip: ${finalKeyObj.ipv4}\n`;          
+            y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+            y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+            y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+            y += `    dns:\n`; 
+            y += `      - 1.1.1.1\n`;
+            y += `      - 1.0.0.1\n`;
+            y += `    reserved: [${resArr.join(', ')}]\n`; 
+            y += `    udp: true\n`;
+            y += `    mtu: 1280\n\n`;
+        });
+    });
+
+    // 🍏 第一層策略組：純 Warp 內網測速優選（注入 lazy 與 expected-status 參數）
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
-    y += "    url: https://cp.cloudflare.com/generate_204\n"; // 🍏 改為正統 HTTPS
-    y += "    interval: 600\n";  // 🍏 10分鐘一測，防漫遊丟包
-    y += "    tolerance: 20\n";  // 🍏 寬容度對齊 20
+    y += "    url: https://cp.cloudflare.com/generate_204\n"; 
+    y += "    interval: 600\n";        // 🍏 對齊 600 秒
+    y += "    tolerance: 20\n";       // 🍏 寬容度設為 20
+    y += "    lazy: true\n";          // 🍏 開啟按需延遲加載，杜絕多餘探測
+    y += "    expected-status: 204\n"; // 🍏 嚴格校驗 Cloudflare 204 回應
     y += "    proxies:\n";
-    y += "      - Warp2408\n";
-    y += "      - Warp500\n\n";
+    warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
+    y += "\n";
 
+    // 🍏 第二層策略組：終極 FINAL 出口控制組
     y += "  - name: FINAL\n";
     y += "    type: select\n";
     y += "    proxies:\n";
@@ -248,7 +250,6 @@ function buildStashYaml(finalKeyObj, customRulesText) {
             }
         });
     }
-    // 🍏 終極出口收尾
     y += "  - MATCH,FINAL";
     return y;
 }
@@ -359,7 +360,7 @@ export default async function handler(request, response) {
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Auto-WIS 滿血雙層控制台</title>
+        <title>Auto-WIS 8節點矩陣控制台</title>
         <style>
             body { font-family: -apple-system, system-ui, sans-serif; background: #f4f6f9; color: #333; padding: 25px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
@@ -380,14 +381,14 @@ export default async function handler(request, response) {
     <body>
         <div class="container">
             <div class="time-banner">
-                <span>⚡ Auto-WIS 完美雙層分流版 (v2.1.0)</span>
+                <span>⚡ Auto-WIS 矩陣分流完全體 (v2.2.0)</span>
                 <span>實時時間: ${currentTimeString}</span>
             </div>
 
             <div class="card">
                 <h2>🌐 物理防禦端點狀態</h2>
                 <p>📍 請求來源地區：<span class="ip-badge">${clientCountry}</span></p>
-                <p>📡 輸出端點：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">engage.cloudflareclient.com</span></p>
+                <p>📡 輸出模式：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">4 IP × 2 Port 交叉混合矩陣 (共8節點)</span></p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
@@ -467,7 +468,7 @@ export default async function handler(request, response) {
             </div>
 
             <div class="card">
-                <h2>📄 當前純淨 YAML 預覽（雙層策略與 Default Rules 架構）</h2>
+                <h2>📄 當前純淨 YAML 預覽（8節點矩陣架構）</h2>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
         </div>
