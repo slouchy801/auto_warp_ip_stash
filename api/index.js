@@ -47,7 +47,7 @@ const fallbackKey = {
     isFallback: true 
 };
 
-// 🍏 乾淨俐落的精細化 Default Rules（徹底刪除 cloudflare / vercel 的 DIRECT 規則）
+// 🍏 乾淨俐落的精細化 Default Rules（徹底刪除 cloudflare 與 vercel 域名直連）
 const defaultRulesText = `# [Default Rules] 精細化網絡分流機制
 - GEOSITE,CN,DIRECT
 - GEOIP,CN,DIRECT
@@ -61,13 +61,12 @@ let memoryBackup = {
     useForceRotate: true, 
     rotateUnit: "d",
     rotateValue: 1,
-    lastRotateTime: Date.now(),
     customRulesText: defaultRulesText
 };
 
 async function loadConfig() {
     try {
-        const data = await redisCommand('GET', ['auto_wis_config_v3']);
+        const data = await redisCommand('GET', ['auto_wis_config_v4']);
         if (data) {
             let cfg = JSON.parse(data);
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
@@ -82,7 +81,7 @@ async function loadConfig() {
 async function saveConfig(config) {
     memoryBackup = config;
     try {
-        await redisCommand('SET', ['auto_wis_config_v3', JSON.stringify(config)]);
+        await redisCommand('SET', ['auto_wis_config_v4', JSON.stringify(config)]);
     } catch(e){}
 }
 
@@ -123,7 +122,6 @@ async function registerWarpAccount() {
         const privBase64 = Buffer.from(jwkPriv.d, 'base64url').toString('base64');
         const pubBase64 = Buffer.from(jwkPriv.x, 'base64url').toString('base64');
 
-        // 遞交真實的 Public Key 進行建交
         const regData = await cfPost('https://api.cloudflareclient.com/v0a/reg', {
             "key": pubBase64, "install_id": "", "fcm_token": ""
         });
@@ -170,9 +168,9 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 動態地理分流矩陣 YAML 構建器
+// 🍏 3. 滿血完全體：Stash 內建自由點選切換區域 YAML 構建器
 // ==========================================
-function buildStashYaml(finalKeyObj, customRulesText, targetRegion = "all") {
+function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
         return `# [Auto-WIS] ⚠️ 請先訪問控制台網頁並點擊「一鍵註冊」生成有效的 Cloudflare 金鑰對。`;
     }
@@ -180,7 +178,7 @@ function buildStashYaml(finalKeyObj, customRulesText, targetRegion = "all") {
     let resArr = [0, 0, 0];
     if (Array.isArray(finalKeyObj.reserved)) resArr = finalKeyObj.reserved;
 
-    // 🍏 大數據 Anycast 傾向性高容錯端點矩陣池
+    // 🍏 4x3 = 12 節點地理傾向性 Anycast 全球矩陣池
     const geoPool = {
         hk: [
             { ip: "engage.cloudflareclient.com", port: 2408 },
@@ -205,7 +203,7 @@ function buildStashYaml(finalKeyObj, customRulesText, targetRegion = "all") {
     let y = "proxies:\n";
     let groupMapping = { hk: [], jp: [], us: [] };
 
-    // 生成底層 WireGuard 代理節點
+    // 同步生成底層所有國家的 WireGuard 節點，一個都不少！
     Object.keys(geoPool).forEach(reg => {
         geoPool[reg].forEach((node, idx) => {
             const proxyName = `Warp-${reg.toUpperCase()}-${idx + 1}`;
@@ -228,7 +226,7 @@ function buildStashYaml(finalKeyObj, customRulesText, targetRegion = "all") {
 
     y += "proxy-groups:\n";
 
-    // 🍏 依據 url-test 規範生成各區域獨立的 url-test 組
+    // 🍏 為每個區域建立獨立的 url-test 自動優選策略組 (600秒測速，20寬容，lazy延遲探測)
     Object.keys(groupMapping).forEach(reg => {
         y += `  - name: 📦 ${reg.toUpperCase()}-WARP池\n`;
         y += `    type: url-test\n`;
@@ -242,26 +240,16 @@ function buildStashYaml(finalKeyObj, customRulesText, targetRegion = "all") {
         y += "\n";
     });
 
-    // 🍏 核心控制：FINAL 節點選擇組（根據 ?region= 參數動態重組）
+    // 🍏 把控制權完全交返畀你！FINAL 出口組支援你在 Stash App 內手動點選切換區域
     y += "  - name: FINAL\n";
     y += "    type: select\n";
     y += "    proxies:\n";
-
-    if (targetRegion === "hk") {
-        y += "      - 📦 HK-WARP池\n";
-    } else if (targetRegion === "jp") {
-        y += "      - 📦 JP-WARP池\n";
-    } else if (targetRegion === "us") {
-        y += "      - 📦 US-WARP池\n";
-    } else {
-        // all 模式：將三者全部列出，預設走最快的池
-        y += "      - 📦 HK-WARP池\n";
-        y += "      - 📦 JP-WARP池\n";
-        y += "      - 📦 US-WARP池\n";
-    }
+    y += "      - 📦 HK-WARP池\n"; // 點選這個，就只會在香港 Anycast 節點間跳轉
+    y += "      - 📦 JP-WARP池\n"; // 點選這個，就只會在日本 Anycast 節點間跳轉
+    y += "      - 📦 US-WARP池\n"; // 點選這個，就只會在美國 Anycast 節點間跳轉
     y += "      - DIRECT\n\n";
 
-    // 規則鏈
+    // 規則鏈分流流程
     y += "rules:\n";
     if (customRulesText) {
         customRulesText.split('\n').forEach(line => {
@@ -283,13 +271,10 @@ export default async function handler(request, response) {
     const userAgent = (request.headers['user-agent'] || '').toLowerCase();
     const urlStr = request.url || '';
     const urlObj = new URL(urlStr, `https://${request.headers.host || 'localhost'}`);
-    
-    // 🍏 精確抓取用戶指定的地區篩選參數
-    const regionParam = (urlObj.searchParams.get('region') || 'all').toLowerCase();
     const typeParam = urlObj.searchParams.get('type');
     
     const clientCountry = request.headers['x-vercel-ip-country'] || 'HK';
-    const baseUrl = `https://${request.headers.host}${urlStr.split('?')[0]}`;
+    const hostUrl = `https://${request.headers.host}${urlStr.split('?')[0]}`;
     const isStash = userAgent.includes('stash') || userAgent.includes('clash') || typeParam === 'stash';
 
     let config = await loadConfig();
@@ -345,9 +330,6 @@ export default async function handler(request, response) {
                     if (config.keyHistoryPool.length > 10) config.keyHistoryPool = config.keyHistoryPool.slice(0, 10);
                 }
             }
-            else if (action === 'force_rotate_now') {
-                config.lastRotateTime = Date.now();
-            }
             await saveConfig(config);
         } catch (e) {}
         response.writeHead(302, { Location: request.url });
@@ -369,14 +351,13 @@ export default async function handler(request, response) {
         if (config.currentActiveId === "latest") finalKeyObj = config.latestRegisteredObj;
     }
 
-    const fullStashYaml = buildStashYaml(finalKeyObj, config.customRulesText, regionParam);
+    const fullStashYaml = buildStashYaml(finalKeyObj, config.customRulesText);
 
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         return response.status(200).send(fullStashYaml);
     }
 
-    const nextRotateCountDown = Math.max(0, Math.round((duration - (now - config.lastRotateTime)) / 1000));
     const currentTimeString = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
 
     const html = `
@@ -385,7 +366,7 @@ export default async function handler(request, response) {
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Auto-WIS 地理分流控制台</title>
+        <title>Auto-WIS 滿血自由切換控制台</title>
         <style>
             body { font-family: -apple-system, system-ui, sans-serif; background: #f4f6f9; color: #333; padding: 25px; margin: 0; }
             .container { max-width: 800px; margin: 0 auto; }
@@ -394,26 +375,25 @@ export default async function handler(request, response) {
             h2 { margin-top: 0; color: #007aff; border-bottom: 2px solid #f2f2f2; padding-bottom: 10px; }
             .row { margin-bottom: 15px; }
             label { font-weight: bold; display: block; margin-bottom: 5px; }
-            input[type="number"], select, textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; box-sizing: border-box; }
-            textarea { height: 110px; font-family: monospace; }
+            textarea { padding: 10px; border: 1px solid #ddd; border-radius: 8px; width: 100%; box-sizing: border-box; height: 110px; font-family: monospace; }
             button { background: #007aff; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
             .ip-badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-weight: bold; }
-            .url-link { background: #f8f9fa; padding: 10px; border-radius: 8px; font-family: monospace; font-size: 12px; margin-top: 5px; border: 1px dashed #ccc; cursor: pointer; color: #007aff; }
-            .active-box { background: #e8f5e9; border-left: 5px solid #34c759; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 10px; color:#1b5e20; }
+            .url-link { background: #f8f9fa; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 14px; border: 2px dashed #007aff; cursor: pointer; color: #007aff; font-weight: bold; text-align: center; }
             pre { background: #1e1e1e; color: #4af626; padding: 15px; border-radius: 10px; overflow-x: auto; font-family: monospace; font-size: 13px; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="time-banner">
-                <span>⚡ Auto-WIS 滿血分區分流版 (v2.3.0)</span>
+                <span>⚡ Auto-WIS 完美自由切換版 (v2.4.0)</span>
                 <span>實時時間: ${currentTimeString}</span>
             </div>
 
             <div class="card">
-                <h2>🌐 當前分區狀態</h2>
+                <h2>🌐 出口架構模式</h2>
                 <p>📍 請求來源地區：<span class="ip-badge">${clientCountry}</span></p>
-                <p>🎯 當前控制台預覽模式：<span class="ip-badge" style="background:#fff3e0; color:#e65100;">${regionParam.toUpperCase()} 組</span></p>
+                <p>📡 輸出模式：<span class="ip-badge" style="background:#e8f5e9; color:#1b5e20;">完整多群組輸出 (12個 Anycast 交叉節點)</span></p>
+                <p>💡 <b>使用說明：</b> 依家一條訂閱包辦晒所有 Region。你直接喺 Stash App 入面點擊 <b>FINAL</b> 策略組，就可以自由揀選要行香港、日本定美國，唔使換 URL！</p>
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #007aff, #0056b3); color: white;">
@@ -428,64 +408,22 @@ export default async function handler(request, response) {
                 <h2>⚙️ 路由與密鑰管理面版</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="save_settings">
-                    
                     <div class="row">
-                        <label>🎯 選擇套用金鑰：</label>
-                        <select name="active_key_id">
-                            <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${finalKeyObj.isFallback ? '⚠️未設定打底賬戶' : '永久打底賬戶'} (${config.safeKey.time})</option>
-                            ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - ${config.latestRegisteredObj.time}</option>` : ''}
-                            ${config.keyHistoryPool.map((k, idx) => `
-                                <option value="history_${idx}" ${config.currentActiveId===`history_${idx}`?'selected':''}>📜 [歷史備份池 ${idx+1}] - ${k.time}</option>
-                            `).join('')}
-                        </select>
-                    </div>
-
-                    <div class="row">
-                        <input type="checkbox" id="make_safe" name="make_safe_permanent" value="true">
-                        <label for="make_safe" style="display:inline; color:#007aff; cursor:pointer;">💾 將選中金鑰覆蓋並鎖定為「永久 Safe Key」</label>
-                    </div>
-
-                    <div class="active-box">
-                        <strong>🟢 Stash 目前即時載入的金鑰詳情：</strong><br>
-                        • WireGuard PrivateKey: ${finalKeyObj.privateKey}<br>
-                        • Server PublicKey: ${finalKeyObj.peerPublicKey}
-                    </div>
-
-                    <div class="row" style="margin-top:15px;">
                         <label>✍️ 配置分流 Rules 路由規則：</label>
                         <textarea name="custom_rules">${config.customRulesText}</textarea>
                     </div>
-
-                    <div class="row">
-                        <label>⏱️ 定時交棒刷新週期：</label>
-                        每 <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:60px; display:inline-block;">
-                        <select name="rotate_unit" style="width:100px; display:inline-block;">
-                            <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
-                            <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
-                            <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
-                        </select>
-                    </div>
-
                     <button type="submit">💾 儲存並同步至雲端 Redis</button>
                 </form>
             </div>
 
-            <div class="card" style="border: 2px solid #007aff;">
-                <h2>🔗 手機 Stash 專用「分區訂閱網址」</h2>
-                <p style="font-size: 13px; color:#555;">複製下方對應網址填入 Stash，Warp 節點就會嚴格鎖定在該地區：</p>
-                
-                <label>🌐 全球動態優選組 (All Region):</label>
-                <div class="url-link" onclick="navigator.clipboard.writeText('${baseUrl}?type=stash&region=all');alert('已複製 All 網址！');">${baseUrl}?type=stash&region=all</div>
-                
-                <label style="margin-top:10px;">🇯🇵 嚴格鎖定日本組 (Japan Only):</label>
-                <div class="url-link" onclick="navigator.clipboard.writeText('${baseUrl}?type=stash&region=jp');alert('已複製 JP 網址！');">${baseUrl}?type=stash&region=jp</div>
-                
-                <label style="margin-top:10px;">🇭🇰 嚴格鎖定香港組 (Hong Kong Only):</label>
-                <div class="url-link" onclick="navigator.clipboard.writeText('${baseUrl}?type=stash&region=hk');alert('已複製 HK 網址！');">${baseUrl}?type=stash&region=hk</div>
+            <div class="card" style="border: 2px solid #34c759;">
+                <h2>🔗 手機 Stash 唯一專用訂閱網址</h2>
+                <p style="font-size: 13px; color:#555;">複製下方網址直接填入 Stash 即可。App 內會自動解鎖三個區域的獨立切換選單：</p>
+                <div class="url-link" onclick="navigator.clipboard.writeText('${hostUrl}?type=stash');alert('已複製唯一訂閱網址！');">${hostUrl}?type=stash</div>
             </div>
 
             <div class="card">
-                <h2>📄 當前 YAML 預覽 (?region=${regionParam})</h2>
+                <h2>📄 當前 YAML 完整結構預覽 (包含 HK、JP、US 策略組)</h2>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
         </div>
