@@ -1,10 +1,10 @@
-// v2.1.0
+// v2.2.0
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
 
 // 動態讀取本檔案第一行版本號
-let currentVersion = "v2.1.0";
+let currentVersion = "v2.2.0";
 try {
     const firstLine = fs.readFileSync(__filename, 'utf8').split('\n')[0];
     const match = firstLine.match(/\/\/\s*([^\s]+)/);
@@ -12,7 +12,7 @@ try {
 } catch(e) {}
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 引擎 (修正超時卡死問題)
+// 🌟 1. 原生 Redis REST API 引擎 (防卡死 Vercel 修正)
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -27,8 +27,6 @@ function redisCommand(cmd, args = []) {
             }
             cleanUrl = cleanUrl.replace(/\/$/, '');
 
-            // 修正：REST API 如果使用 GET 拼接大型 JSON 參數會破裂，且原本 https.request 的 timeout 觸發不會觸發 error 事件導致卡死
-            // 這裡改用 Vercel 原生支援的 fetch + POST 方式，安全且支援嚴格超時
             fetch(cleanUrl, {
                 method: 'POST',
                 headers: { 
@@ -36,7 +34,7 @@ function redisCommand(cmd, args = []) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify([cmd, ...args]),
-                signal: AbortSignal.timeout(3000) // 確保 3 秒內一定斷開，不卡死 Vercel
+                signal: AbortSignal.timeout(3000)
             })
             .then(res => res.json())
             .then(data => {
@@ -67,6 +65,19 @@ const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOIP,CN,DIRECT
 - GEOIP,PRIVATE,DIRECT`;
 
+// 預設 9 個「靈魂連連看」核心特種兵
+const defaultMatrix = [
+    { ip: "engage.cloudflareclient.com", port: 2408, label: "官方域名-2408" },
+    { ip: "engage.cloudflareclient.com", port: 500,  label: "官方域名-500" },
+    { ip: "162.159.193.1", port: 500,   label: "VIP企業-500" },
+    { ip: "141.101.90.1",  port: 443,   label: "CDN網頁-443" },
+    { ip: "108.162.192.1", port: 123,   label: "核心商務-123" },
+    { ip: "172.65.0.1",    port: 11940, label: "光譜非網-11940" },
+    { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" },
+    { ip: "162.159.193.5", port: 4500,  label: "VIP備份-4500" },
+    { ip: "108.162.195.1", port: 8080,  label: "商務混合-8080" }
+];
+
 let memoryBackup = {
     safeKey: fallbackKey,
     currentActiveId: "safe",
@@ -77,7 +88,7 @@ let memoryBackup = {
     rotateValue: 1,
     lastRotateTime: Date.now(),
     customRulesText: defaultRulesText,
-    currentIPList: [{ ip: 'engage.cloudflareclient.com', port: 2408 }] 
+    matrixNodes: defaultMatrix // 動態節點儲存格
 };
 
 async function loadConfig() {
@@ -88,6 +99,9 @@ async function loadConfig() {
             if (!cfg.safeKey || !cfg.safeKey.privateKey) cfg.safeKey = fallbackKey;
             if (!cfg.keyHistoryPool) cfg.keyHistoryPool = [];
             if (!cfg.customRulesText) cfg.customRulesText = defaultRulesText;
+            if (!cfg.matrixNodes || !Array.isArray(cfg.matrixNodes) || cfg.matrixNodes.length === 0) {
+                cfg.matrixNodes = defaultMatrix;
+            }
             return cfg;
         }
     } catch(e){}
@@ -184,9 +198,9 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 唯一精準修改：9 個「靈灵魂連連看」特種兵矩陣 + 2秒黃金超時 YAML 構建器
+// 🍏 3. 基於用戶自定義矩陣格子的 YAML 構建器
 // ==========================================
-function buildStashYaml(finalKeyObj, customRulesText) {
+function buildStashYaml(finalKeyObj, customRulesText, matrixNodes) {
     if (finalKeyObj.isFallback) {
         return `# [Auto-WIS] 系統檢測到您尚未成功生成有效的 Cloudflare 金鑰對。\n# 請先訪問控制台網頁並點擊「一鍵註冊」生成。`;
     }
@@ -201,19 +215,22 @@ function buildStashYaml(finalKeyObj, customRulesText) {
     let y = "proxies:\n";
     let warpProxyNames = [];
 
-    // ----------------------------------------------------------------
-    // 陣營一：【唯一官方域名】+ 2 大防封核心端口 (共 2 個節點)
-    // ----------------------------------------------------------------
-    const domainHost = "engage.cloudflareclient.com";
-    const domainPorts = [2408, 500]; 
+    // 讀取自定義格子數組
+    const nodes = Array.isArray(matrixNodes) ? matrixNodes : defaultMatrix;
 
-    domainPorts.forEach(port => {
-        const name = `⚡-CF-DOMAIN-${port}`;
+    nodes.forEach((item, index) => {
+        const cleanIp = (item.ip || "").trim();
+        const cleanPort = parseInt(item.port) || 2408;
+        const cleanLabel = (item.label || `Node-${index + 1}`).trim();
+        
+        if (!cleanIp) return; // 跳過空IP
+
+        const name = `⚡-CF-${cleanLabel}`;
         warpProxyNames.push(name);
         y += `  - name: ${name}\n`;
         y += `    type: wireguard\n`;
-        y += `    server: ${domainHost}\n`;
-        y += `    port: ${port}\n`;
+        y += `    server: ${cleanIp}\n`;
+        y += `    port: ${cleanPort}\n`;
         y += `    ip: ${finalKeyObj.ipv4}\n`;          
         y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
         y += `    private-key: ${finalKeyObj.privateKey}\n`; 
@@ -224,46 +241,13 @@ function buildStashYaml(finalKeyObj, customRulesText) {
         y += `    mtu: 1280\n\n`;
     });
 
-    // ----------------------------------------------------------------
-    // 陣營二：【5 大特種 Anycast 物理 IP】× 專屬特權端口 交叉互補 (共 7 個節點)
-    // 嚴格對齊「5大頂級IP」與「大到不能封/冷門Port」心法，總數卡死在 9 個，防堵塞
-    // ----------------------------------------------------------------
-    const staticMatrix = [
-        { ip: "162.159.193.1", port: 500,   label: "VIP企業-500" },     // 5大IP之一：企業級網段 + IPSec 綠色通道
-        { ip: "141.101.90.1",  port: 443,   label: "CDN網頁-443" },     // 5大IP之一：公共CDN網段 + QUIC 網頁偽裝
-        { ip: "108.162.192.1", port: 123,   label: "核心商務-123" },    // 5大IP之一：核心商務網段 + NTP 時間同步
-        { ip: "172.65.0.1",    port: 11940, label: "光譜非網-11940" },  // 5大IP之一：Spectrum網段 + 冷門高位端口突圍
-        { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" },   // 5大IP之一：基礎設施網段 + 標準端口
-        { ip: "162.159.193.5", port: 4500,  label: "VIP備份-4500" },    // 企業級備份 IP + IPSec L2TP/NAT 端口
-        { ip: "108.162.195.1", port: 8080,  label: "商務混合-8080" }    // 商務核心備份 IP + 傳統代理端口偽裝
-    ];
-
-    staticMatrix.forEach(item => {
-        const name = `⚡-CF-${item.label}`;
-        warpProxyNames.push(name);
-        y += `  - name: ${name}\n`;
-        y += `    type: wireguard\n`;
-        y += `    server: ${item.ip}\n`;
-        y += `    port: ${item.port}\n`;
-        y += `    ip: ${finalKeyObj.ipv4}\n`;          
-        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-        y += `    dns:\n      - 1.1.1.1\n      - 1.0.0.1\n`;
-        y += `    reserved: [${resArr.join(', ')}]\n`; 
-        y += `    udp: true\n`;
-        y += `    mtu: 1280\n\n`;
-    });
-
-    // ----------------------------------------------------------------
-    // 策略組與分流規則 (完美實裝 2秒黃金超時 測速)
-    // ----------------------------------------------------------------
+    // 策略組與分流規則 (2秒黃金超時)
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
     y += "    url: https://cp.cloudflare.com/generate_204\n"; 
     y += "    interval: 180\n";       
-    y += "    timeout: 2000\n";      // ⚡ 2秒黃金超時：拒絕慢節點拖死網絡
+    y += "    timeout: 2000\n";      
     y += "    tolerance: 30\n";      
     y += "    lazy: false\n";         
     y += "    expected-status: 204\n"; 
@@ -292,7 +276,7 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 }
 
 // ==========================================
-// 🚀 4. 主路由與控制台邏輯面 (100% 完整原汁原味保留)
+// 🚀 4. 主路由與控制台邏輯面
 // ==========================================
 export default async function handler(request, response) {
     const userAgent = (request.headers['user-agent'] || '').toLowerCase();
@@ -332,11 +316,29 @@ export default async function handler(request, response) {
             if (action === 'save_settings') {
                 const selectedId = params.get('active_key_id') || "safe";
                 config.currentActiveId = selectedId;
-                
                 config.customRulesText = params.get('custom_rules') || defaultRulesText;
                 config.useForceRotate = params.get('use_force') === 'true';
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
+
+                // 🌟 解析提取動態矩陣格子
+                const ips = params.getAll('node_ip[]');
+                const ports = params.getAll('node_port[]');
+                const labels = params.getAll('node_label[]');
+                
+                let newMatrix = [];
+                for(let i=0; i<ips.length; i++) {
+                    if(ips[i] && ips[i].trim()) {
+                        newMatrix.push({
+                            ip: ips[i].trim(),
+                            port: parseInt(ports[i]) || 2408,
+                            label: labels[i] ? labels[i].trim() : `Node-${i+1}`
+                        });
+                    }
+                }
+                if(newMatrix.length > 0) {
+                    config.matrixNodes = newMatrix;
+                }
             } 
             else if (action === 'make_safe_permanent_action') {
                 const selectedId = params.get('active_key_id') || "safe";
@@ -394,7 +396,7 @@ export default async function handler(request, response) {
         if (config.currentActiveId === "latest") finalKeyObj = config.latestRegisteredObj;
     }
 
-    const fullStashYaml = buildStashYaml(finalKeyObj, config.customRulesText);
+    const fullStashYaml = buildStashYaml(finalKeyObj, config.customRulesText, config.matrixNodes);
 
     if (isStash) {
         response.setHeader('Content-Type', 'text/yaml; charset=utf-8');
@@ -412,27 +414,32 @@ export default async function handler(request, response) {
         <title>[Auto-WIS] (${currentVersion})</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d0e12; color: #e2e8f0; padding: 25px; margin: 0; }
-            .container { max-width: 800px; margin: 0 auto; }
+            .container { max-width: 850px; margin: 0 auto; }
             .card { background: #151821; padding: 25px; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); margin-bottom: 20px; border: 1px solid #222633; }
             .time-banner { background: #1a1d29; border: 1px solid #2d334a; color: #38bdf8; padding: 14px 20px; border-radius: 10px; font-weight: bold; margin-bottom: 20px; display: flex; justify-content: space-between; font-family: monospace; box-shadow: 0 0 15px rgba(56,189,248,0.1); align-items: center; }
-            .time-banner .left-title { font-size: 15px; color: #38bdf8; letter-spacing: 0.5px; }
-            .time-banner .right-time { color: #94a3b8; font-weight: normal; }
             h2 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #222633; padding-bottom: 12px; font-size: 20px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
             .row { margin-bottom: 18px; }
             .action-row { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 18px; width: 100%; }
             .action-row .select-container { flex: 1; }
             label { font-weight: 600; display: block; margin-bottom: 8px; color: #94a3b8; font-size: 14px; }
-            input[type="number"], select, textarea { padding: 12px; background: #0d0e12; border: 1px solid #2d334a; border-radius: 8px; width: 100%; box-sizing: border-box; color: #e2e8f0; transition: border-color 0.2s; }
-            input[type="number"]:focus, select:focus, textarea:focus { border-color: #38bdf8; outline: none; }
+            input[type="number"], input[type="text"], select, textarea { padding: 12px; background: #0d0e12; border: 1px solid #2d334a; border-radius: 8px; width: 100%; box-sizing: border-box; color: #e2e8f0; transition: border-color 0.2s; }
+            input[type="number"]:focus, input[type="text"]:focus, select:focus, textarea:focus { border-color: #38bdf8; outline: none; }
             textarea { height: 140px; font-family: "Fira Code", monospace; font-size: 13px; }
             button { background: #38bdf8; color: #0d0e12; border: none; padding: 12px 22px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; box-shadow: 0 4px 12px rgba(56,189,248,0.2); height: 43px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; white-space: nowrap; }
             button:hover { opacity: 0.9; transform: translateY(-1px); }
             .btn-orange { background: #fb923c; box-shadow: 0 4px 12px rgba(251,146,60,0.2); }
             .btn-green { background: #10b981; box-shadow: 0 4px 12px rgba(16,185,129,0.2); color: #0d0e12; }
+            .btn-danger { background: #ef4444; color: #fff; box-shadow: 0 4px 12px rgba(239,68,68,0.2); }
             .ip-badge { background: #1e293b; color: #38bdf8; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-weight: bold; border: 1px solid #2d334a; }
-            .active-box { background: rgba(16,185,129,0.05); border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 12px; color: #34d399; border-top: 1px solid rgba(16,185,129,0.1); border-right: 1px solid rgba(16,185,129,0.1); border-bottom: 1px solid rgba(16,185,129,0.1); line-height: 1.6; }
-            .warn-box { background: rgba(239,68,68,0.05); border-left: 4px solid #ef4444; padding: 14px; border-radius: 6px; color: #f87171; margin-top: 12px; font-size: 14px; border-top: 1px solid rgba(239,68,68,0.1); border-right: 1px solid rgba(239,68,68,0.1); border-bottom: 1px solid rgba(239,68,68,0.1); }
+            .active-box { background: rgba(16,185,129,0.05); border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 13px; margin-top: 12px; color: #34d399; border-top: 1px solid rgba(16,185,129,0.1); line-height: 1.6; }
+            .warn-box { background: rgba(239,68,68,0.05); border-left: 4px solid #ef4444; padding: 14px; border-radius: 6px; color: #f87171; margin-top: 12px; font-size: 14px; }
             pre { background: #0d0e12; color: #34d399; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: "Fira Code", monospace; font-size: 13px; border: 1px solid #222633; margin: 0; margin-top: 15px; }
+            
+            /* 矩陣編輯器樣式 */
+            .matrix-control-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; background: #1a1d29; padding: 12px; border-radius: 8px; border: 1px solid #2d334a;}
+            .matrix-grid { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
+            .matrix-row { display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 10px; align-items: center; background: #1e2230; padding: 10px; border-radius: 8px; border: 1px solid #2d334a; }
+            
             .yaml-header { cursor: pointer; user-select: none; }
             .yaml-header:hover { color: #60a5fa; }
             .arrow-icon { transition: transform 0.3s; display: inline-block; font-size: 16px; color: #64748b; }
@@ -456,7 +463,7 @@ export default async function handler(request, response) {
             </div>
 
             <div class="card" style="background: linear-gradient(135deg, #1e293b, #111827); border-color: #38bdf8;">
-                <h2 style="color: #38bdf8;">⚡ 免手動金鑰生成器 (一鍵註冊)</h2>
+                <h2>⚡ 免手動金鑰生成器 (一鍵註冊)</h2>
                 <form method="POST">
                     <input type="hidden" name="action" value="click_register_new">
                     <button type="submit" class="btn-orange" style="width:100%; padding:15px; font-size:16px; height:auto;">⚡ 獲取全新合規安全 Warp 密鑰</button>
@@ -472,7 +479,7 @@ export default async function handler(request, response) {
                     <div class="action-row">
                         <div class="select-container">
                             <label>🎯 選擇套用金鑰（支持永久鎖定與歷史緩衝池）：</label>
-                            <select id="active_key_select" name="active_key_id" style="font-family: monospace; font-size: 13px;" onchange="autoSaveConfig()">
+                            <select id="active_key_select" name="active_key_id" style="font-family: monospace; font-size: 13px;">
                                 <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${config.safeKey.isFallback ? '⚠️未設定打底賬戶' : `永久打底 [IP:${config.safeKey.ipv4}] [Res:${config.safeKey.reserved.join(',')}]`} (${config.safeKey.time})</option>
                                 ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - IP: ${config.latestRegisteredObj.ipv4} | Res: [${config.latestRegisteredObj.reserved.join(',')}] | (${config.latestRegisteredObj.time})</option>` : ''}
                                 ${config.keyHistoryPool.map((k, idx) => `
@@ -498,24 +505,43 @@ export default async function handler(request, response) {
                         </div>
                     `}
 
+                    <!-- 🛠️ 核心升級：動態矩陣格子手動編輯器 -->
+                    <div class="row" style="margin-top:25px;">
+                        <label>🛠️ 手動自定義 Anycast IP + Port 矩陣格：</label>
+                        <div class="matrix-control-bar">
+                            <span>期望矩陣規模：</span>
+                            <input type="number" id="matrix_size_input" value="${config.matrixNodes.length}" style="width:80px; padding:6px; text-align:center;" min="1" max="30">
+                            <span>個格子</span>
+                            <button type="button" onclick="adjustMatrixSize()" style="height:32px; padding:0 12px; font-size:13px; background:#60a5fa; color:#0d0e12;">套用增減 (+/-)</button>
+                        </div>
+                        
+                        <div id="matrix-container" class="matrix-grid">
+                            <!-- 由 JavaScript 動態渲染渲染 -->
+                        </div>
+                    </div>
+
                     <div class="row" style="margin-top:20px;">
                         <label>✍️ 配置分流 Rules 路由規則：</label>
-                        <textarea name="custom_rules" onchange="autoSaveConfig()">${config.customRulesText}</textarea>
+                        <textarea name="custom_rules">${config.customRulesText}</textarea>
                     </div>
 
                     <div class="row" style="background: #1a1d29; padding: 15px; border-radius: 8px; border: 1px solid #2d334a;">
                         <label style="margin-bottom:10px;">⏱️ 定時交棒刷新週期：</label>
                         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                             <span>每</span> 
-                            <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;" onchange="autoSaveConfig()">
-                            <select name="rotate_unit" style="width:100px; display:inline-block; padding:8px;" onchange="autoSaveConfig()">
+                            <input type="number" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;">
+                            <select name="rotate_unit" style="width:100px; display:inline-block; padding:8px;">
                                 <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
                                 <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
                                 <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
                             </select>
-                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;" onchange="autoSaveConfig()">
+                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;">
                             <label for="use_force" style="display:inline; font-weight:normal; color:#e2e8f0; cursor:pointer; margin:0;">時間到強制交棒</label>
                         </div>
+                    </div>
+
+                    <div style="margin-top: 20px;">
+                        <button type="submit" class="btn-green" style="width:100%; height:50px; font-size:16px;">💾 儲存上方所有控制面板設定及矩陣節點</button>
                     </div>
                 </form>
 
@@ -539,13 +565,86 @@ export default async function handler(request, response) {
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
-                    <h2>📄 當前純淨 YAML 預覽（9節點矩陣架構） <span class="arrow-icon">▼</span></h2>
+                    <h2>📄 當前純淨 YAML 預覽（實時生成） <span class="arrow-icon">▼</span></h2>
                 </label>
-                <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
+                <pre>${fullStashYaml.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
             </div>
         </div>
 
         <script>
+            // 從後端注入目前的節點矩陣數據
+            let currentNodes = ${JSON.stringify(config.matrixNodes)};
+
+            // 渲染動態矩陣格子
+            function renderMatrixGrid() {
+                const container = document.getElementById('matrix-container');
+                container.innerHTML = '';
+                
+                currentNodes.forEach((node, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'matrix-row';
+                    row.innerHTML = \`
+                        <div>
+                            <input type="text" name="node_ip[]" value="\${node.ip || ''}" placeholder="Anycast IP / 域名" required>
+                        </div>
+                        <div>
+                            <input type="number" name="node_port[]" value="\${node.port || 2408}" placeholder="端口" required>
+                        </div>
+                        <div>
+                            <input type="text" name="node_label[]" value="\${node.label || 'Node-'+(index+1)}" placeholder="備註別名">
+                        </div>
+                        <div>
+                            <button type="button" class="btn-danger" style="height:38px; padding:0 10px;" onclick="removeNodeRow(\${index})">✕</button>
+                        </div>
+                    \`;
+                    container.appendChild(row);
+                });
+                document.getElementById('matrix_size_input').value = currentNodes.length;
+            }
+
+            // 增減按鈕調整規模 (+/-)
+            function adjustMatrixSize() {
+                const targetSize = parseInt(document.getElementById('matrix_size_input').value) || 1;
+                // 收集當前已填寫的最新值，防止被清空
+                syncCurrentFormValues();
+
+                if (currentNodes.length < targetSize) {
+                    while (currentNodes.length < targetSize) {
+                        currentNodes.push({ ip: 'engage.cloudflareclient.com', port: 2408, label: '加開節點-' + (currentNodes.length + 1) });
+                    }
+                } else if (currentNodes.length > targetSize) {
+                    currentNodes = currentNodes.slice(0, targetSize);
+                }
+                renderMatrixGrid();
+            }
+
+            // 刪除單行
+            function removeNodeRow(index) {
+                syncCurrentFormValues();
+                currentNodes.splice(index, 1);
+                renderMatrixGrid();
+            }
+
+            // 同步表單當前輸入，防止動態增減格時被刷新重置
+            function syncCurrentFormValues() {
+                const ips = document.getElementsByName('node_ip[]');
+                const ports = document.getElementsByName('node_port[]');
+                const labels = document.getElementsByName('node_label[]');
+                
+                let updated = [];
+                for(let i=0; i<ips.length; i++) {
+                    updated.push({
+                        ip: ips[i].value,
+                        port: parseInt(ports[i].value) || 2408,
+                        label: labels[i].value
+                    });
+                }
+                currentNodes = updated;
+            }
+
+            // 初始化渲染
+            renderMatrixGrid();
+
             // 1. 右上角動態時鐘
             function updateClock() {
                 const d = new Date();
@@ -563,7 +662,6 @@ export default async function handler(request, response) {
             function updateCountdown() {
                 if (timeLeft <= 0) {
                     countdownEl.innerText = "0";
-                    // 倒數歸零時，全自動提交表單觸發刷新
                     document.getElementById('auto-rotate-form').submit();
                 } else {
                     countdownEl.innerText = timeLeft;
@@ -582,11 +680,6 @@ export default async function handler(request, response) {
                 }
                 document.getElementById('lock_safe_key_id').value = currentSelected;
                 document.getElementById('lock-safe-form').submit();
-            }
-
-            // 4. 自動儲存機制：當規則或定時設定改變時，直接向後端提交儲存
-            function autoSaveConfig() {
-                document.getElementById('main-config-form').submit();
             }
         </script>
     </body>
