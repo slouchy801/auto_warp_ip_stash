@@ -1,10 +1,10 @@
-// v2.1.1
+// v2.1.2
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
 
 // 動態讀取本檔案第一行版本號
-let currentVersion = "v2.1.1";
+let currentVersion = "v2.1.2";
 try {
     const firstLine = fs.readFileSync(__filename, 'utf8').split('\n')[0];
     const match = firstLine.match(/\/\/\s*([^\s]+)/);
@@ -182,7 +182,7 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美實現：精簡 4 節點矩陣（全面採用 2408 優質埠）
+// 🍏 3. 完美實現：極簡化單域名節點（徹底解決多餘節點超時、拖慢速度問題）
 // ==========================================
 function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
@@ -198,34 +198,23 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 
     let y = "proxies:\n";
     
-    // 💡 移除不穩定的 Port 500，精選 4 個最穩定、跨網段的官方 Anycast 端點
-    const endpoints = [
-        { ip: "engage.cloudflareclient.com", label: "DNS" },
-        { ip: "162.159.192.1", label: "Anycast-A" },
-        { ip: "162.159.193.1", label: "Anycast-B" },
-        { ip: "188.114.96.1",   label: "Anycast-C" }
-    ];
-    let warpProxyNames = [];
-
-    endpoints.forEach(ep => {
-        const name = `Warp-${ep.label}`;
-        warpProxyNames.push(name);
-
-        y += `  - name: ${name}\n`;
-        y += `    type: wireguard\n`;
-        y += `    server: ${ep.ip}\n`;
-        y += `    port: 2408\n`; // 全面使用標準 2408 埠，防止 Port 500 被 ISP 惡意丟包
-        y += `    ip: ${finalKeyObj.ipv4}\n`;          
-        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-        y += `    dns:\n`; 
-        y += `      - 1.1.1.1\n`;
-        y += `      - 1.0.0.1\n`;
-        y += `    reserved: [${resArr.join(', ')}]\n`; 
-        y += `    udp: true\n`;
-        y += `    mtu: 1280\n\n`;
-    });
+    // 💡 徹底移除所有易受地域封鎖的固定 IP，只保留一個最穩定、支持當地 DNS 智能優化路由的官方主要域名端點。
+    const name = "Warp-Main-Endpoint";
+    
+    y += `  - name: ${name}\n`;
+    y += `    type: wireguard\n`;
+    y += `    server: engage.cloudflareclient.com\n`;
+    y += `    port: 2408\n`;
+    y += `    ip: ${finalKeyObj.ipv4}\n`;          
+    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+    y += `    dns:\n`; 
+    y += `      - 1.1.1.1\n`;
+    y += `      - 1.0.0.1\n`;
+    y += `    reserved: [${resArr.join(', ')}]\n`; 
+    y += `    udp: true\n`;
+    y += `    mtu: 1280\n\n`;
 
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
@@ -236,8 +225,7 @@ function buildStashYaml(finalKeyObj, customRulesText) {
     y += "    lazy: true\n";          
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
-    warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
-    y += "\n";
+    y += `      - ${name}\n\n`;
 
     y += "  - name: FINAL\n";
     y += "    type: select\n";
@@ -507,7 +495,7 @@ export default async function handler(request, response) {
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
-                    <h2>📄 當前純淨 YAML 預覽（4節點矩陣優化版） <span class="arrow-icon">▼</span></h2>
+                    <h2>📄 當前純淨 YAML 預覽（單域名極速優化版） <span class="arrow-icon">▼</span></h2>
                 </label>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
