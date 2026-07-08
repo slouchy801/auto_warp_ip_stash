@@ -12,7 +12,7 @@ try {
 } catch(e) {}
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 引擎
+// 🌟 1. 原生 Redis REST API 引擎 (修正超時卡死問題)
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -25,23 +25,28 @@ function redisCommand(cmd, args = []) {
                 const hostPart = cleanUrl.split('@')[1];
                 cleanUrl = `https://${hostPart}`;
             }
-            const urlObj = new URL(`${cleanUrl}/${cmd}/${args.join('/')}`);
-            const options = { method: 'GET', headers: { 'Authorization': `Bearer ${token}` }, timeout: 3000 };
-            const req = https.request(urlObj, options, (res) => {
-                let body = '';
-                res.on('data', chunk => body += chunk);
-                res.on('end', () => {
-                    try { 
-                        const result = JSON.parse(body).result;
-                        if (result && typeof result === 'string' && result.startsWith('%7B')) {
-                            resolve(decodeURIComponent(result));
-                        }
-                        resolve(result); 
-                    } catch(e) { resolve(null); }
-                });
-            });
-            req.on('error', () => resolve(null));
-            req.end();
+            cleanUrl = cleanUrl.replace(/\/$/, '');
+
+            // 修正：REST API 如果使用 GET 拼接大型 JSON 參數會破裂，且原本 https.request 的 timeout 觸發不會觸發 error 事件導致卡死
+            // 這裡改用 Vercel 原生支援的 fetch + POST 方式，安全且支援嚴格超時
+            fetch(cleanUrl, {
+                method: 'POST',
+                headers: { 
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify([cmd, ...args]),
+                signal: AbortSignal.timeout(3000) // 確保 3 秒內一定斷開，不卡死 Vercel
+            })
+            .then(res => res.json())
+            .then(data => {
+                const result = data.result;
+                if (result && typeof result === 'string' && result.startsWith('%7B')) {
+                    return resolve(decodeURIComponent(result));
+                }
+                resolve(result);
+            })
+            .catch(() => resolve(null));
         } catch(e) { resolve(null); }
     });
 }
