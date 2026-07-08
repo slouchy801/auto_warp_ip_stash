@@ -1,9 +1,9 @@
-// version 2.2.2
+// version 2.2.3
 const crypto = require('crypto');
 const https = require('https');
 
 // 直接用死數，不讀取檔案，乾脆俐落
-const currentVersion = "v2.2.2";
+const currentVersion = "v2.2.3";
 
 // ==========================================
 // 🌟 1. 原生 Redis REST API 引擎
@@ -234,10 +234,10 @@ function buildStashYaml(finalKeyObj, customRulesText, matrixNodes) {
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
     y += "    url: https://cp.cloudflare.com/generate_204\n"; 
-    y += "    interval: 150\n";       
-    y += "    timeout: 800\n";       // ⚡ 大幅優化：超時降到 800ms，死節點絕不拖時間
-    y += "    tolerance: 5\n";       // ⚡ 大幅優化：5ms 差距就立刻擇優跳轉，拒絕慢速節點
-    y += "    lazy: false\n";         
+    y += "    interval: 300\n";       // 🔋 調整為 300 秒測一次速
+    y += "    timeout: 800\n";        // ⚡ 保持 800ms 快刀斬亂麻，不拖延死節點
+    y += "    tolerance: 15\n";       // 🔋 15ms 容忍度，避免反覆橫跳浪費電
+    y += "    lazy: true\n";          // 🔋 開啟惰性探測：沒用網絡、或者熄螢幕時不測速，極致慳電
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
     warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
