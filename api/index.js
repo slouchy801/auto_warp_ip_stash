@@ -64,7 +64,7 @@ const defaultMatrix = [
     { ip: "188.114.96.1",  port: 2408,  label: "CF#~ip01" },
     { ip: "engage.cloudflareclient.com", port: 2408, label: "CF#~domain01" },
     { ip: "162.159.195.1", port: 2408,  label: "CF#~ip02" },
-    { ip: "162.159.192.10", port: 2408, label: "CF#~ip03-TW" }
+    { ip: "162.159.192.10", port: 2408, label: "CF#~ip03" }
 ];
 
 let memoryBackup = {
