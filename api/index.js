@@ -59,10 +59,11 @@ const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOIP,CN,DIRECT
 - GEOIP,PRIVATE,DIRECT`;
 
-// 預設只保留兩個連到的核心 Anycast
+// 預設只保留你實測最順暢、最不會撐爆 2408 端口的黃金鐵三角
 const defaultMatrix = [
-    { ip: "engage.cloudflareclient.com", port: 2408, label: "官方域名-2408" },
-    { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" }
+    { ip: "188.114.96.1",  port: 2408,  label: "CF公共網站防禦節點 (免死純IP)" },
+    { ip: "engage.cloudflareclient.com", port: 2408, label: "Warp官方全域解析域名 (Mac優選)" },
+    { ip: "162.159.195.1", port: 2408,  label: "Warp專用Anycast實體 (官方核心)" }
 ];
 
 let memoryBackup = {
