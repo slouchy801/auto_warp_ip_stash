@@ -1,9 +1,9 @@
-// version 2.2.1
+// version 2.2.2
 const crypto = require('crypto');
 const https = require('https');
 
 // 直接用死數，不讀取檔案，乾脆俐落
-const currentVersion = "v2.2.1";
+const currentVersion = "v2.2.2";
 
 // ==========================================
 // 🌟 1. 原生 Redis REST API 引擎
@@ -234,9 +234,9 @@ function buildStashYaml(finalKeyObj, customRulesText, matrixNodes) {
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
     y += "    url: https://cp.cloudflare.com/generate_204\n"; 
-    y += "    interval: 180\n";       
-    y += "    timeout: 2000\n";      
-    y += "    tolerance: 30\n";      
+    y += "    interval: 150\n";       
+    y += "    timeout: 800\n";       // ⚡ 大幅優化：超時降到 800ms，死節點絕不拖時間
+    y += "    tolerance: 5\n";       // ⚡ 大幅優化：5ms 差距就立刻擇優跳轉，拒絕慢速節點
     y += "    lazy: false\n";         
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
@@ -514,7 +514,7 @@ export default async function handler(request, response) {
                             <button type="button" onclick="addNewNodeRow()" style="height:32px; padding:0 12px; font-size:13px; background:#60a5fa; color:#0d0e12;">➕ 新增一行格子</button>
                         </div>
                         
-                        <!-- 📋 新增的欄位描述行 -->
+                        <!-- 📋 欄位描述行 -->
                         <div class="matrix-header-desc">
                             <div>第一格：域名/ip</div>
                             <div>第二格：port</div>
