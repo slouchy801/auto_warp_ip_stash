@@ -59,12 +59,12 @@ const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOIP,CN,DIRECT
 - GEOIP,PRIVATE,DIRECT`;
 
-// 預設採用 2408 + 隱藏安全端口混編，徹底解決端口並發瓶頸，真正 100% 順暢
+// 3 條香港本地精銳 + 1 條實測通過的台灣備用線路
 const defaultMatrix = [
-    // 🌟 2408 端口精銳（保留你測出最順的 3 個）
-    { ip: "188.114.96.1",  port: 2408,  label: "CF公共網站防禦節點 (免死純IP-2408)" },
-    { ip: "engage.cloudflareclient.com", port: 2408, label: "Warp官方全域解析域名 (Mac優選-2408)" },
-    { ip: "162.159.195.1", port: 2408,  label: "Warp專用Anycast實體 (官方核心-2408)" },
+    { ip: "188.114.96.1",  port: 2408,  label: "CF#~ip01" },
+    { ip: "engage.cloudflareclient.com", port: 2408, label: "CF#~domain01" },
+    { ip: "162.159.195.1", port: 2408,  label: "CF#~ip02" },
+    { ip: "162.159.192.10", port: 2408, label: "CF#~ip03-TW" }
 ];
 
 let memoryBackup = {
@@ -233,18 +233,29 @@ function buildStashYaml(finalKeyObj, customRulesText, matrixNodes) {
     });
 
     y += "proxy-groups:\n";
+    
+    // 🎛️ 1. 改良版 WARP 組：由 url-test 改為 select 模式，支援手動剔節點
     y += "  - name: WARP\n";
+    y += "    type: select\n";
+    y += "    proxies:\n";
+    y += "      - ⚡ 自動選擇最快線路\n"; // 預設放在第一位，維持自動化
+    warpProxyNames.forEach(name => { y += `      - ${name}\n`; }); // 將所有矩陣格子節點塞進去供手動選擇
+    y += "\n";
+
+    // 🔋 2. 新增背景自動測速組：繼承所有 800ms 快刀、lazy 慳電與 300 秒極致調教邏輯
+    y += "  - name: ⚡ 自動選擇最快線路\n";
     y += "    type: url-test\n"; 
     y += "    url: https://cp.cloudflare.com/generate_204\n"; 
-    y += "    interval: 300\n";       // 🔋 調整為 300 秒測一次速
-    y += "    timeout: 800\n";        // ⚡ 保持 800ms 快刀斬亂麻，不拖延死節點
-    y += "    tolerance: 15\n";       // 🔋 15ms 容忍度，避免反覆橫跳浪費電
-    y += "    lazy: true\n";          // 🔋 開啟惰性探測：沒用網絡、或者熄螢幕時不測速，極致慳電
+    y += "    interval: 300\n";       // 🔋 300 秒測一次速
+    y += "    timeout: 800\n";        // ⚡ 800ms 快刀斬亂麻，不拖延死節點
+    y += "    tolerance: 50\n";       // 🎯 放寬至 50ms 容忍度，對手動加入的跨國節點更寬容，減少反覆橫跳
+    y += "    lazy: true\n";          // 🔋 惰性探測：熄螢幕不測速，極致慳電
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
     warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
     y += "\n";
 
+    // 🔗 3. 最終出水口：維持不變，對接剛剛改良好的手動/自動雙層 WARP 組
     y += "  - name: FINAL\n";
     y += "    type: select\n";
     y += "    proxies:\n";
