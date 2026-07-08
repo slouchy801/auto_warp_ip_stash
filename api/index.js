@@ -1,15 +1,9 @@
-// v2.2.0
+// version 2.2.1
 const crypto = require('crypto');
 const https = require('https');
-const fs = require('fs');
 
-// 動態讀取本檔案第一行版本號
-let currentVersion = "v2.2.0";
-try {
-    const firstLine = fs.readFileSync(__filename, 'utf8').split('\n')[0];
-    const match = firstLine.match(/\/\/\s*([^\s]+)/);
-    if (match) currentVersion = match[1];
-} catch(e) {}
+// 直接用死數，不讀取檔案，乾脆俐落
+const currentVersion = "v2.2.1";
 
 // ==========================================
 // 🌟 1. 原生 Redis REST API 引擎
@@ -65,17 +59,10 @@ const defaultRulesText = `# [Default Rules] 精細化網絡分流
 - GEOIP,CN,DIRECT
 - GEOIP,PRIVATE,DIRECT`;
 
-// 預設 9 個核心特種兵矩陣
+// 預設只保留兩個連到的核心 Anycast
 const defaultMatrix = [
     { ip: "engage.cloudflareclient.com", port: 2408, label: "官方域名-2408" },
-    { ip: "engage.cloudflareclient.com", port: 500,  label: "官方域名-500" },
-    { ip: "162.159.193.1", port: 500,   label: "VIP企業-500" },
-    { ip: "141.101.90.1",  port: 443,   label: "CDN網頁-443" },
-    { ip: "108.162.192.1", port: 123,   label: "核心商務-123" },
-    { ip: "172.65.0.1",    port: 11940, label: "光譜非網-11940" },
-    { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" },
-    { ip: "162.159.193.5", port: 4500,  label: "VIP備份-4500" },
-    { ip: "108.162.195.1", port: 8080,  label: "商務混合-8080" }
+    { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" }
 ];
 
 let memoryBackup = {
@@ -243,7 +230,6 @@ function buildStashYaml(finalKeyObj, customRulesText, matrixNodes) {
         y += `    mtu: 1280\n\n`;
     });
 
-    // 2秒黃金超時測速
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
@@ -316,16 +302,13 @@ export default async function handler(request, response) {
             const action = params.get('action');
 
             if (action === 'save_matrix_all') {
-                // 1. 同步套用選中的 Key 更改
                 const selectedId = params.get('active_key_id') || "safe";
                 config.currentActiveId = selectedId;
 
-                // 2. 接收並同步交棒時間與 Checkbox 設定
                 config.rotateValue = parseInt(params.get('rotate_value')) || 1;
                 config.rotateUnit = params.get('rotate_unit') || 'd';
                 config.useForceRotate = params.get('use_force') === 'true';
 
-                // 3. 提取並同步矩陣節點
                 const ips = params.getAll('node_ip[]');
                 const ports = params.getAll('node_port[]');
                 const labels = params.getAll('node_label[]');
@@ -436,8 +419,9 @@ export default async function handler(request, response) {
             .warn-box { background: rgba(239,68,68,0.05); border-left: 4px solid #ef4444; padding: 14px; border-radius: 6px; color: #f87171; margin-top: 12px; font-size: 14px; }
             pre { background: #0d0e12; color: #34d399; padding: 18px; border-radius: 10px; overflow-x: auto; font-family: "Fira Code", monospace; font-size: 13px; border: 1px solid #222633; margin: 0; margin-top: 15px; }
             
-            /* 矩陣格子樣式 */
-            .matrix-control-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; background: #1a1d29; padding: 12px; border-radius: 8px; border: 1px solid #2d334a;}
+            /* 矩陣格子與欄位描述樣式 */
+            .matrix-control-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; background: #1a1d29; padding: 12px; border-radius: 8px; border: 1px solid #2d334a;}
+            .matrix-header-desc { display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 10px; padding: 0 10px; margin-bottom: 8px; color: #64748b; font-size: 12px; font-weight: 600; text-transform: uppercase; }
             .matrix-grid { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
             .matrix-row { display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 10px; align-items: center; background: #1e2230; padding: 10px; border-radius: 8px; border: 1px solid #2d334a; }
             
@@ -523,7 +507,6 @@ export default async function handler(request, response) {
 
                     <p style="font-size:13px; color:#64748b; margin-top:20px; font-family:monospace;">⏳ 距離下一次自動交棒剩餘：<span style="color:#fb923c; font-weight:bold;" id="countdown-timer">--</span> 秒</p>
                     
-                    <!-- 🛠️ 搬移與全頁同步化：動態矩陣格子手動編輯器 -->
                     <div class="row" style="margin-top:25px; border-top: 1px dashed #2d334a; padding-top: 20px;">
                         <label>🛠️ 手動自定義 Anycast IP + Port 矩陣格：</label>
                         <div class="matrix-control-bar">
@@ -531,6 +514,14 @@ export default async function handler(request, response) {
                             <button type="button" onclick="addNewNodeRow()" style="height:32px; padding:0 12px; font-size:13px; background:#60a5fa; color:#0d0e12;">➕ 新增一行格子</button>
                         </div>
                         
+                        <!-- 📋 新增的欄位描述行 -->
+                        <div class="matrix-header-desc">
+                            <div>第一格：域名/ip</div>
+                            <div>第二格：port</div>
+                            <div>第三格：描述</div>
+                            <div style="visibility:hidden; width:38px;">✕</div>
+                        </div>
+
                         <div id="matrix-container" class="matrix-grid">
                             <!-- 由下面的 JavaScript 進行動態渲染 -->
                         </div>
@@ -566,16 +557,13 @@ export default async function handler(request, response) {
         </div>
 
         <script>
-            // 從後端安全注入目前的節點數據
             let currentNodes = ${JSON.stringify(config.matrixNodes)};
 
-            // ⚙️ 當勾選框狀態改變、或者時間內容改變時，直接觸發自動全頁提交
             function autoSubmitForm() {
                 syncCurrentFormValues();
                 document.getElementById('global-matrix-form').submit();
             }
 
-            // 渲染動態格子
             function renderMatrixGrid() {
                 const container = document.getElementById('matrix-container');
                 container.innerHTML = '';
@@ -601,7 +589,6 @@ export default async function handler(request, response) {
                 });
             }
 
-            // ➕ 一鍵加開格子
             function addNewNodeRow() {
                 syncCurrentFormValues();
                 currentNodes.push({
@@ -612,14 +599,12 @@ export default async function handler(request, response) {
                 renderMatrixGrid();
             }
 
-            // ✕ 刪除單行格子
             function removeNodeRow(index) {
                 syncCurrentFormValues();
                 currentNodes.splice(index, 1);
                 renderMatrixGrid();
             }
 
-            // 操作時即時同步表單數據
             function syncCurrentFormValues() {
                 const ips = document.getElementsByName('node_ip[]');
                 const ports = document.getElementsByName('node_port[]');
@@ -636,10 +621,8 @@ export default async function handler(request, response) {
                 currentNodes = updated;
             }
 
-            // 初始化格子渲染
             renderMatrixGrid();
 
-            // 1. 動態時鐘
             function updateClock() {
                 const d = new Date();
                 const pad = (n) => String(n).padStart(2, '0');
@@ -649,7 +632,6 @@ export default async function handler(request, response) {
             setInterval(updateClock, 1000);
             updateClock();
 
-            // 2. 自動交棒計時器
             let timeLeft = parseInt("${nextRotateCountDown}") || 0;
             const countdownEl = document.getElementById('countdown-timer');
             
@@ -665,7 +647,6 @@ export default async function handler(request, response) {
             setInterval(updateCountdown, 1000);
             updateCountdown();
 
-            // 3. 獨立永久覆蓋鎖定按鈕
             function lockAsSafeKey() {
                 const currentSelected = document.getElementById('active_key_select').value;
                 if (currentSelected === 'safe') {
