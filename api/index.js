@@ -1,4 +1,4 @@
-// v2.1.0i_Premium_Dark
+// v2.1.0
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
