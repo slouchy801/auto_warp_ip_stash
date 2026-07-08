@@ -1,10 +1,10 @@
-// v2.1.2
+// v2.1.4
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
 
 // 動態讀取本檔案第一行版本號
-let currentVersion = "v2.1.2";
+let currentVersion = "v2.1.4";
 try {
     const firstLine = fs.readFileSync(__filename, 'utf8').split('\n')[0];
     const match = firstLine.match(/\/\/\s*([^\s]+)/);
@@ -12,7 +12,7 @@ try {
 } catch(e) {}
 
 // ==========================================
-// 🌟 1. 原生 Redis REST API 引擎 (修正超時卡死問題)
+// 🌟 1. 原生 Redis REST API 引擎
 // ==========================================
 function redisCommand(cmd, args = []) {
     return new Promise((resolve) => {
@@ -34,7 +34,7 @@ function redisCommand(cmd, args = []) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify([cmd, ...args]),
-                signal: AbortSignal.timeout(3000) // 確保 3 秒內一定斷開，不卡死 Vercel
+                signal: AbortSignal.timeout(3000)
             })
             .then(res => res.json())
             .then(data => {
@@ -74,8 +74,7 @@ let memoryBackup = {
     rotateUnit: "d",
     rotateValue: 1,
     lastRotateTime: Date.now(),
-    customRulesText: defaultRulesText,
-    currentIPList: [{ ip: 'engage.cloudflareclient.com', port: 2408 }] 
+    customRulesText: defaultRulesText
 };
 
 async function loadConfig() {
@@ -126,7 +125,7 @@ function cfPost(url, data) {
 }
 
 // ==========================================
-// 🔑 2. 與 wgcf 100% 同源的 Curve25519 JWK 密鑰註冊
+// 🔑 2. Warp 密鑰註冊
 // ==========================================
 async function registerWarpAccount() {
     try {
@@ -182,7 +181,7 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美實現：極簡化單域名節點（徹底解決多餘節點超時、拖慢速度問題）
+// 🍏 3. 完美實現：用純 IP 避開 DNS 死鎖（只留 2 個絕對精準官方節點）
 // ==========================================
 function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
@@ -198,23 +197,32 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 
     let y = "proxies:\n";
     
-    // 💡 徹底移除所有易受地域封鎖的固定 IP，只保留一個最穩定、支持當地 DNS 智能優化路由的官方主要域名端點。
-    const name = "Warp-Main-Endpoint";
-    
-    y += `  - name: ${name}\n`;
-    y += `    type: wireguard\n`;
-    y += `    server: engage.cloudflareclient.com\n`;
-    y += `    port: 2408\n`;
-    y += `    ip: ${finalKeyObj.ipv4}\n`;          
-    y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-    y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-    y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-    y += `    dns:\n`; 
-    y += `      - 1.1.1.1\n`;
-    y += `      - 1.0.0.1\n`;
-    y += `    reserved: [${resArr.join(', ')}]\n`; 
-    y += `    udp: true\n`;
-    y += `    mtu: 1280\n\n`;
+    // 💡 唔用域名，直接用 engage.cloudflareclient.com 最核心嘅兩組 Anycast IP 實體，分別行 2408 同 4500 Port
+    const endpoints = [
+        { ip: "162.159.193.1", port: 2408, label: "Primary-2408" },
+        { ip: "162.159.193.1", port: 4500, label: "Backup-4500" }
+    ];
+    let warpProxyNames = [];
+
+    endpoints.forEach(ep => {
+        const name = `Warp-${ep.label}`;
+        warpProxyNames.push(name);
+
+        y += `  - name: ${name}\n`;
+        y += `    type: wireguard\n`;
+        y += `    server: ${ep.ip}\n`;
+        y += `    port: ${ep.port}\n`;
+        y += `    ip: ${finalKeyObj.ipv4}\n`;          
+        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+        y += `    dns:\n`; 
+        y += `      - 1.1.1.1\n`;
+        y += `      - 1.0.0.1\n`;
+        y += `    reserved: [${resArr.join(', ')}]\n`; 
+        y += `    udp: true\n`;
+        y += `    mtu: 1280\n\n`; // 保持 1280 最安全兼容值，防止 4G/5G 掉包
+    });
 
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
@@ -225,7 +233,8 @@ function buildStashYaml(finalKeyObj, customRulesText) {
     y += "    lazy: true\n";          
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
-    y += `      - ${name}\n\n`;
+    warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
+    y += "\n";
 
     y += "  - name: FINAL\n";
     y += "    type: select\n";
@@ -427,7 +436,7 @@ export default async function handler(request, response) {
                     
                     <div class="action-row">
                         <div class="select-container">
-                            <label>🎯 選擇套用金鑰（支持永久鎖定與歷史緩衝池）：</label>
+                            <label>🎯 選擇套用金鑰：</label>
                             <select id="active_key_select" name="active_key_id" style="font-family: monospace; font-size: 13px;" onchange="autoSaveConfig()">
                                 <option value="safe" ${config.currentActiveId==='safe'?'selected':''}>🌟 [Safe Key] ${config.safeKey.isFallback ? '⚠️未設定打底賬戶' : `永久打底 [IP:${config.safeKey.ipv4}] [Res:${config.safeKey.reserved.join(',')}]`} (${config.safeKey.time})</option>
                                 ${config.latestRegisteredObj ? `<option value="latest" ${config.currentActiveId==='latest'?'selected':''}>🆕 [最新一鍵獲取] - IP: ${config.latestRegisteredObj.ipv4} | Res: [${config.latestRegisteredObj.reserved.join(',')}] | (${config.latestRegisteredObj.time})</option>` : ''}
@@ -495,14 +504,13 @@ export default async function handler(request, response) {
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
-                    <h2>📄 當前純淨 YAML 預覽（單域名極速優化版） <span class="arrow-icon">▼</span></h2>
+                    <h2>📄 當前純淨 YAML 預覽（IP 直連死鎖優化版） <span class="arrow-icon">▼</span></h2>
                 </label>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
         </div>
 
         <script>
-            // 1. 右上角動態時鐘
             function updateClock() {
                 const d = new Date();
                 const pad = (n) => String(n).padStart(2, '0');
@@ -512,7 +520,6 @@ export default async function handler(request, response) {
             setInterval(updateClock, 1000);
             updateClock();
 
-            // 2. 倒數秒數動態計時
             let timeLeft = parseInt("${nextRotateCountDown}") || 0;
             const countdownEl = document.getElementById('countdown-timer');
             
@@ -528,7 +535,6 @@ export default async function handler(request, response) {
             setInterval(updateCountdown, 1000);
             updateCountdown();
 
-            // 3. 獨立按鈕動作
             function lockAsSafeKey() {
                 const currentSelected = document.getElementById('active_key_select').value;
                 if (currentSelected === 'safe') {
@@ -539,7 +545,6 @@ export default async function handler(request, response) {
                 document.getElementById('lock-safe-form').submit();
             }
 
-            // 4. 自動儲存機制
             function autoSaveConfig() {
                 document.getElementById('main-config-form').submit();
             }
