@@ -1,4 +1,4 @@
-// version 1.0.0
+// v2.2.0
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
@@ -102,6 +102,9 @@ async function loadConfig() {
             if (!cfg.matrixNodes || !Array.isArray(cfg.matrixNodes) || cfg.matrixNodes.length === 0) {
                 cfg.matrixNodes = defaultMatrix;
             }
+            if (cfg.useForceRotate === undefined) cfg.useForceRotate = true;
+            if (!cfg.rotateUnit) cfg.rotateUnit = 'd';
+            if (!cfg.rotateValue) cfg.rotateValue = 1;
             return cfg;
         }
     } catch(e){}
@@ -313,11 +316,16 @@ export default async function handler(request, response) {
             const action = params.get('action');
 
             if (action === 'save_matrix_all') {
-                // 套用選中的 Key 更改
+                // 1. 同步套用選中的 Key 更改
                 const selectedId = params.get('active_key_id') || "safe";
                 config.currentActiveId = selectedId;
 
-                // 提取並同步矩陣節點
+                // 2. 接收並同步交棒時間與 Checkbox 設定
+                config.rotateValue = parseInt(params.get('rotate_value')) || 1;
+                config.rotateUnit = params.get('rotate_unit') || 'd';
+                config.useForceRotate = params.get('use_force') === 'true';
+
+                // 3. 提取並同步矩陣節點
                 const ips = params.getAll('node_ip[]');
                 const ports = params.getAll('node_port[]');
                 const labels = params.getAll('node_label[]');
@@ -498,6 +506,21 @@ export default async function handler(request, response) {
                         </div>
                     `}
 
+                    <div class="row" style="background: #1a1d29; padding: 15px; border-radius: 8px; border: 1px solid #2d334a; margin-top:20px;">
+                        <label style="margin-bottom:10px;">⏱️ 定時交棒刷新週期：</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span>每</span> 
+                            <input type="number" id="rotate_value" name="rotate_value" value="${config.rotateValue}" style="width:70px; display:inline-block; padding:8px;" onchange="autoSubmitForm()">
+                            <select id="rotate_unit" name="rotate_unit" style="width:100px; display:inline-block; padding:8px;" onchange="autoSubmitForm()">
+                                <option value="m" ${config.rotateUnit==='m'?'selected':''}>分鐘</option>
+                                <option value="h" ${config.rotateUnit==='h'?'selected':''}>小時</option>
+                                <option value="d" ${config.rotateUnit==='d'?'selected':''}>天</option>
+                            </select>
+                            <input type="checkbox" id="use_force" name="use_force" value="true" ${config.useForceRotate?'checked':''} style="width:auto; cursor:pointer; margin-left:10px;" onchange="autoSubmitForm()">
+                            <label for="use_force" style="display:inline; font-weight:normal; color:#e2e8f0; cursor:pointer; margin:0;">時間到強制交棒</label>
+                        </div>
+                    </div>
+
                     <p style="font-size:13px; color:#64748b; margin-top:20px; font-family:monospace;">⏳ 距離下一次自動交棒剩餘：<span style="color:#fb923c; font-weight:bold;" id="countdown-timer">--</span> 秒</p>
                     
                     <!-- 🛠️ 搬移與全頁同步化：動態矩陣格子手動編輯器 -->
@@ -545,6 +568,12 @@ export default async function handler(request, response) {
         <script>
             // 從後端安全注入目前的節點數據
             let currentNodes = ${JSON.stringify(config.matrixNodes)};
+
+            // ⚙️ 當勾選框狀態改變、或者時間內容改變時，直接觸發自動全頁提交
+            function autoSubmitForm() {
+                syncCurrentFormValues();
+                document.getElementById('global-matrix-form').submit();
+            }
 
             // 渲染動態格子
             function renderMatrixGrid() {
