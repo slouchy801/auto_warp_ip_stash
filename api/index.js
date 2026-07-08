@@ -165,7 +165,7 @@ async function registerWarpAccount() {
         }
 
         return { 
-            privateKey: privBase64,   
+            privateKey: privBase64,    
             peerPublicKey: peerPubKey, 
             ipv4: ipv4Address,
             ipv6: ipv6Address,
@@ -184,7 +184,7 @@ function getRotateMs(value, unit) {
 }
 
 // ==========================================
-// 🍏 3. 完美實現：8 節點矩陣 + 雙層策略組 YAML 構建器
+// 🍏 3. 唯一精準修改：9 個「靈灵魂連連看」特種兵矩陣 + 2秒黃金超時 YAML 構建器
 // ==========================================
 function buildStashYaml(finalKeyObj, customRulesText) {
     if (finalKeyObj.isFallback) {
@@ -199,45 +199,73 @@ function buildStashYaml(finalKeyObj, customRulesText) {
     }
 
     let y = "proxies:\n";
-    
-    const endpoints = [
-        { ip: "engage.cloudflareclient.com", label: "DNS" },
-        { ip: "162.159.192.1", label: "IP1" },
-        { ip: "162.159.193.1", label: "IP2" },
-        { ip: "188.114.96.1",   label: "IP3" }
-    ];
-    const ports = [2408, 500];
     let warpProxyNames = [];
 
-    endpoints.forEach(ep => {
-        ports.forEach(port => {
-            const name = `Warp-${ep.label}-${port}`;
-            warpProxyNames.push(name);
+    // ----------------------------------------------------------------
+    // 陣營一：【唯一官方域名】+ 2 大防封核心端口 (共 2 個節點)
+    // ----------------------------------------------------------------
+    const domainHost = "engage.cloudflareclient.com";
+    const domainPorts = [2408, 500]; 
 
-            y += `  - name: ${name}\n`;
-            y += `    type: wireguard\n`;
-            y += `    server: ${ep.ip}\n`;
-            y += `    port: ${port}\n`;
-            y += `    ip: ${finalKeyObj.ipv4}\n`;          
-            y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
-            y += `    private-key: ${finalKeyObj.privateKey}\n`; 
-            y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
-            y += `    dns:\n`; 
-            y += `      - 1.1.1.1\n`;
-            y += `      - 1.0.0.1\n`;
-            y += `    reserved: [${resArr.join(', ')}]\n`; 
-            y += `    udp: true\n`;
-            y += `    mtu: 1280\n\n`;
-        });
+    domainPorts.forEach(port => {
+        const name = `⚡-CF-DOMAIN-${port}`;
+        warpProxyNames.push(name);
+        y += `  - name: ${name}\n`;
+        y += `    type: wireguard\n`;
+        y += `    server: ${domainHost}\n`;
+        y += `    port: ${port}\n`;
+        y += `    ip: ${finalKeyObj.ipv4}\n`;          
+        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+        y += `    dns:\n      - 1.1.1.1\n      - 1.0.0.1\n`;
+        y += `    reserved: [${resArr.join(', ')}]\n`; 
+        y += `    udp: true\n`;
+        y += `    mtu: 1280\n\n`;
     });
 
+    // ----------------------------------------------------------------
+    // 陣營二：【5 大特種 Anycast 物理 IP】× 專屬特權端口 交叉互補 (共 7 個節點)
+    // 嚴格對齊「5大頂級IP」與「大到不能封/冷門Port」心法，總數卡死在 9 個，防堵塞
+    // ----------------------------------------------------------------
+    const staticMatrix = [
+        { ip: "162.159.193.1", port: 500,   label: "VIP企業-500" },     // 5大IP之一：企業級網段 + IPSec 綠色通道
+        { ip: "141.101.90.1",  port: 443,   label: "CDN網頁-443" },     // 5大IP之一：公共CDN網段 + QUIC 網頁偽裝
+        { ip: "108.162.192.1", port: 123,   label: "核心商務-123" },    // 5大IP之一：核心商務網段 + NTP 時間同步
+        { ip: "172.65.0.1",    port: 11940, label: "光譜非網-11940" },  // 5大IP之一：Spectrum網段 + 冷門高位端口突圍
+        { ip: "188.114.96.1",  port: 2408,  label: "歐盟基建-2408" },   // 5大IP之一：基礎設施網段 + 標準端口
+        { ip: "162.159.193.5", port: 4500,  label: "VIP備份-4500" },    // 企業級備份 IP + IPSec L2TP/NAT 端口
+        { ip: "108.162.195.1", port: 8080,  label: "商務混合-8080" }    // 商務核心備份 IP + 傳統代理端口偽裝
+    ];
+
+    staticMatrix.forEach(item => {
+        const name = `⚡-CF-${item.label}`;
+        warpProxyNames.push(name);
+        y += `  - name: ${name}\n`;
+        y += `    type: wireguard\n`;
+        y += `    server: ${item.ip}\n`;
+        y += `    port: ${item.port}\n`;
+        y += `    ip: ${finalKeyObj.ipv4}\n`;          
+        y += `    ipv6: ${finalKeyObj.ipv6}\n`;        
+        y += `    private-key: ${finalKeyObj.privateKey}\n`; 
+        y += `    public-key: ${finalKeyObj.peerPublicKey}\n`; 
+        y += `    dns:\n      - 1.1.1.1\n      - 1.0.0.1\n`;
+        y += `    reserved: [${resArr.join(', ')}]\n`; 
+        y += `    udp: true\n`;
+        y += `    mtu: 1280\n\n`;
+    });
+
+    // ----------------------------------------------------------------
+    // 策略組與分流規則 (完美實裝 2秒黃金超時 測速)
+    // ----------------------------------------------------------------
     y += "proxy-groups:\n";
     y += "  - name: WARP\n";
     y += "    type: url-test\n"; 
     y += "    url: https://cp.cloudflare.com/generate_204\n"; 
-    y += "    interval: 600\n";        
-    y += "    tolerance: 20\n";       
-    y += "    lazy: true\n";          
+    y += "    interval: 180\n";       
+    y += "    timeout: 2000\n";      // ⚡ 2秒黃金超時：拒絕慢節點拖死網絡
+    y += "    tolerance: 30\n";      
+    y += "    lazy: false\n";         
     y += "    expected-status: 204\n"; 
     y += "    proxies:\n";
     warpProxyNames.forEach(name => { y += `      - ${name}\n`; });
@@ -264,7 +292,7 @@ function buildStashYaml(finalKeyObj, customRulesText) {
 }
 
 // ==========================================
-// 🚀 4. 主路由與控制台邏輯面
+// 🚀 4. 主路由與控制台邏輯面 (100% 完整原汁原味保留)
 // ==========================================
 export default async function handler(request, response) {
     const userAgent = (request.headers['user-agent'] || '').toLowerCase();
@@ -511,7 +539,7 @@ export default async function handler(request, response) {
             <div class="card yaml-container">
                 <input type="checkbox" id="yaml-toggle">
                 <label for="yaml-toggle" class="yaml-header">
-                    <h2>📄 當前純淨 YAML 預覽（8節點矩陣架構） <span class="arrow-icon">▼</span></h2>
+                    <h2>📄 當前純淨 YAML 預覽（9節點矩陣架構） <span class="arrow-icon">▼</span></h2>
                 </label>
                 <pre>${fullStashYaml.replace(/</g, '&lt;')}</pre>
             </div>
