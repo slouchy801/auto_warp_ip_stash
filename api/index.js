@@ -65,11 +65,6 @@ const defaultMatrix = [
     { ip: "188.114.96.1",  port: 2408,  label: "CF公共網站防禦節點 (免死純IP-2408)" },
     { ip: "engage.cloudflareclient.com", port: 2408, label: "Warp官方全域解析域名 (Mac優選-2408)" },
     { ip: "162.159.195.1", port: 2408,  label: "Warp專用Anycast實體 (官方核心-2408)" },
-    
-    // 🚀 2408 以外的官方隱藏綠色通道（完美分流，不佔用 2408 隊列）
-    { ip: "162.159.192.1", port: 500,   label: "Warp官方核心段 (500-IPSec老牌免封鎖)" },
-    { ip: "162.159.193.1", port: 4500,  label: "Warp官方備用段 (4500-VPN穿透專用)" },
-    { ip: "188.114.96.1",  port: 870,   label: "CF公共防禦純IP (870-Warp秘密低延遲)" }
 ];
 
 let memoryBackup = {
